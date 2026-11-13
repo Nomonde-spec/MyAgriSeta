@@ -137,8 +137,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    await clearStoredToken();
-    setSession(null);
+    try {
+      await apiFetch('/auth/logout', { method: 'POST' });
+    } finally {
+      try {
+        await clearStoredToken();
+      } finally {
+        setSession(null);
+      }
+    }
   };
 
   const value: AuthContextValue = { session, isLoading, login, register, logout, refreshSession, updateProfile };

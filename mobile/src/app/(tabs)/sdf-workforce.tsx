@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
 import { apiFetch } from '@/lib/api';
@@ -28,6 +28,11 @@ const recordTypes: { value: RecordType; label: string }[] = [
   { value: 'atr', label: 'ATR report' },
   { value: 'training', label: 'Training' },
 ];
+
+function getRecordType(value: string | string[] | undefined): RecordType {
+  const normalized = typeof value === 'string' ? value : '';
+  return recordTypes.find((item) => item.value === normalized)?.value ?? 'assessment';
+}
 
 const fieldDefinitions: Record<RecordType, { key: string; label: string; placeholder: string; multiline?: boolean; numeric?: boolean }[]> = {
   assessment: [
@@ -94,9 +99,10 @@ function formatField(record: WorkforceRecord, key: string, label: string) {
 }
 
 export default function SdfWorkforceScreen() {
+  const { section: requestedSection } = useLocalSearchParams<{ section?: string }>();
   const { session } = useAuth();
   const [records, setRecords] = useState<WorkforceRecord[]>([]);
-  const [type, setType] = useState<RecordType>('assessment');
+  const [type, setType] = useState<RecordType>(() => getRecordType(requestedSection));
   const [fields, setFields] = useState<Record<string, string>>(() => emptyFields('assessment'));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -108,6 +114,16 @@ export default function SdfWorkforceScreen() {
   const [selectedAssessmentId, setSelectedAssessmentId] = useState('');
   const [selectedPlanId, setSelectedPlanId] = useState('');
   const [editingRecordId, setEditingRecordId] = useState('');
+
+  useEffect(() => {
+    const nextType = getRecordType(requestedSection);
+    const frame = requestAnimationFrame(() => {
+      setType(nextType);
+      setFields(emptyFields(nextType));
+      setEditingRecordId('');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [requestedSection]);
 
   useEffect(() => {
     let active = true;

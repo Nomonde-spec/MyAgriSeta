@@ -41,6 +41,17 @@ type Opportunity = {
   applicationUrl?: string;
   openingDate: string | null;
   closingDate: string | null;
+  opportunityDetails?: Record<string, string>;
+  eligibilityCriteria?: Record<string, string>;
+  applicationQuestions?: {
+    title: string;
+    type: string;
+    required: boolean;
+    description: string;
+    options: string[];
+  }[];
+  applicationTermsAndConditions?: string;
+  requiredApplicantInformation?: string[];
   sourceName?: string;
   sourceUrl?: string;
   sourceVerifiedAt?: string;
@@ -279,7 +290,18 @@ export default function OpportunityScreen() {
 
               <DetailSection title="Eligibility">
                 <BulletList items={opportunity.eligibility} emptyText="Eligibility criteria have not been verified." />
+                {Object.entries(opportunity.eligibilityCriteria || {}).filter(([, value]) => value.trim()).map(([key, value]) => (
+                  <Text key={key} style={styles.mutedBody}>{key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}: {value}</Text>
+                ))}
               </DetailSection>
+
+              {Object.values(opportunity.opportunityDetails || {}).some((value) => value.trim()) ? (
+                <DetailSection title="Opportunity details">
+                  {Object.entries(opportunity.opportunityDetails || {}).filter(([, value]) => value.trim()).map(([key, value]) => (
+                    <Text key={key} style={styles.mutedBody}>{key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}: {value}</Text>
+                  ))}
+                </DetailSection>
+              ) : null}
 
               {opportunity.requirements?.length ? (
                 <DetailSection title="Requirements">
@@ -316,6 +338,11 @@ export default function OpportunityScreen() {
 
               <DetailSection title="Application instructions">
                 <Text style={styles.body}>{opportunity.applicationInstructions}</Text>
+                {opportunity.openingDate ? <Text style={styles.mutedBody}>Applications open: {opportunity.openingDate}</Text> : null}
+                {opportunity.applicationTermsAndConditions ? <Text style={styles.mutedBody}>Terms: {opportunity.applicationTermsAndConditions}</Text> : null}
+                {opportunity.applicationQuestions?.length ? (
+                  <Text style={styles.mutedBody}>{opportunity.applicationQuestions.length} additional application question(s) will be asked.</Text>
+                ) : null}
               </DetailSection>
 
               {opportunity.sourceName ? (
@@ -391,6 +418,9 @@ export default function OpportunityScreen() {
                     initialEmail={session?.user.email || ''}
                     initialPhone={session?.user.phone}
                     requiredDocuments={opportunity.requiredDocuments || []}
+                    customQuestions={opportunity.applicationQuestions || []}
+                    requiredApplicantInformation={opportunity.requiredApplicantInformation || []}
+                    applicationTermsAndConditions={opportunity.applicationTermsAndConditions || ''}
                     busy={busy}
                     reviewerNotice={opportunity.category === 'Employment' ||
                       opportunity.category === 'Internship' ||

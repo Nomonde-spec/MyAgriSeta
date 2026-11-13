@@ -1,7 +1,39 @@
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000/api';
+const defaultApiBaseUrl = 'http://localhost:3000/api';
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+
+function getExpoDevelopmentHost(): string | null {
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (!hostUri) return null;
+
+  try {
+    const host = new URL(`http://${hostUri}`).hostname;
+    return loopbackHosts.has(host) ? null : host;
+  } catch {
+    return null;
+  }
+}
+
+function getApiBaseUrl(): string {
+  const configuredUrl = process.env.EXPO_PUBLIC_API_URL?.trim() || defaultApiBaseUrl;
+  if (Platform.OS === 'web') return configuredUrl;
+
+  try {
+    const url = new URL(configuredUrl);
+    if (loopbackHosts.has(url.hostname)) {
+      const developmentHost = getExpoDevelopmentHost();
+      if (developmentHost) url.hostname = developmentHost;
+    }
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return configuredUrl;
+  }
+}
+
+export const API_BASE_URL = getApiBaseUrl();
 const TOKEN_KEY = 'myagriseta_token';
 
 function getWebSessionStorage(): Storage | null {
@@ -53,14 +85,22 @@ export async function clearStoredToken(): Promise<void> {
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await getStoredToken();
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
       ...(options.headers || {}),
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-  });
+    });
+  } catch {
+    const connectionHint = Platform.OS === 'web'
+      ? 'Check that the backend is running and reachable.'
+      : 'Check that your phone and computer are on the same Wi-Fi, the backend is running, and the computer firewall allows port 3000.';
+    throw new Error(`Could not connect to MyAgriSETA. ${connectionHint}`);
+  }
 
   const rawBody = await response.text();
   const payload = rawBody ? JSON.parse(rawBody) : {};

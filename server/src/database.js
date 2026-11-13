@@ -21,6 +21,7 @@ const tables = {
   moduleProgress: { name: 'learning_module_progress', key: (record) => record.id },
   certificates: { name: 'certificates', key: (record) => record.id },
   passportSkills: { name: 'passport_skills', key: (record) => record.id },
+  passportRecords: { name: 'passport_records', key: (record) => record.id },
   opportunities: { name: 'opportunities', key: (record) => record.id },
   savedOpportunities: {
     name: 'saved_opportunities',
@@ -72,34 +73,40 @@ function getRecordKey(collection, record) {
 }
 
 async function createTables(client) {
-  for (const { name } of Object.values(tables)) {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS ${name} (
+  // All CREATE TABLE statements are independent, so they are sent as one
+  // multi-statement query (Postgres' simple query protocol runs them in a
+  // single round trip) instead of one round trip per table.
+  const tableStatements = Object.values(tables)
+    .map(
+      ({ name }) => `CREATE TABLE IF NOT EXISTS ${name} (
         record_key text PRIMARY KEY,
         data jsonb NOT NULL CHECK (jsonb_typeof(data) = 'object')
-      )
-    `);
-  }
+      );`
+    )
+    .join('\n');
+  await client.query(`${tableStatements}
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+      token_hash text PRIMARY KEY,
+      expires_at timestamptz NOT NULL
+    );
+  `);
 
-  await client.query("CREATE UNIQUE INDEX IF NOT EXISTS agri_users_email_unique ON users (lower(data->>'email'))");
-  await client.query("CREATE UNIQUE INDEX IF NOT EXISTS agri_users_username_unique ON users (lower(data->>'username'))");
   await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS agri_users_email_unique ON users (lower(data->>'email'));
+    CREATE UNIQUE INDEX IF NOT EXISTS agri_users_username_unique ON users (lower(data->>'username'));
     CREATE UNIQUE INDEX IF NOT EXISTS agri_users_phone_unique
-    ON users ((nullif(btrim(data->>'phone'), '')))
-    WHERE nullif(btrim(data->>'phone'), '') IS NOT NULL
-  `);
-  await client.query(`
+      ON users ((nullif(btrim(data->>'phone'), '')))
+      WHERE nullif(btrim(data->>'phone'), '') IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS agri_users_role_verification_key_unique
-    ON users ((data->>'roleVerificationKey'))
-    WHERE data->>'roleVerificationKey' IS NOT NULL
-  `);
-  await client.query("CREATE UNIQUE INDEX IF NOT EXISTS agri_enrollments_reference_unique ON enrollments ((data->>'reference'))");
-  await client.query(`
+      ON users ((data->>'roleVerificationKey'))
+      WHERE data->>'roleVerificationKey' IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS agri_enrollments_reference_unique ON enrollments ((data->>'reference'));
     CREATE UNIQUE INDEX IF NOT EXISTS agri_enrollments_active_applicant_course_unique
-    ON enrollments ((data->>'applicantId'), (data->>'courseId'))
-    WHERE data->>'active' = 'true'
+      ON enrollments ((data->>'applicantId'), (data->>'courseId'))
+      WHERE data->>'active' = 'true';
+    CREATE UNIQUE INDEX IF NOT EXISTS agri_applications_reference_unique ON applications ((data->>'reference'));
+    CREATE INDEX IF NOT EXISTS agri_revoked_tokens_expires_at ON revoked_tokens (expires_at);
   `);
-  await client.query("CREATE UNIQUE INDEX IF NOT EXISTS agri_applications_reference_unique ON applications ((data->>'reference'))");
 }
 
 async function insertRecord(client, collection, record) {
@@ -109,6 +116,28 @@ async function insertRecord(client, collection, record) {
     `INSERT INTO ${name} (record_key, data) VALUES ($1, $2::jsonb) ON CONFLICT (record_key) DO NOTHING`,
     [key, JSON.stringify(record)]
   );
+}
+
+const INSERT_BATCH_SIZE = 500;
+
+// Inserts every seed record for a collection in as few round trips as
+// possible: one multi-row INSERT per batch instead of one INSERT per record.
+async function insertManyRecords(client, collection, records) {
+  if (!records.length) return;
+  const { name } = getTable(collection);
+  for (let start = 0; start < records.length; start += INSERT_BATCH_SIZE) {
+    const batch = records.slice(start, start + INSERT_BATCH_SIZE);
+    const params = [];
+    const rows = batch.map((record) => {
+      const key = getRecordKey(collection, record);
+      params.push(key, JSON.stringify(record));
+      return `($${params.length - 1}, $${params.length}::jsonb)`;
+    });
+    await client.query(
+      `INSERT INTO ${name} (record_key, data) VALUES ${rows.join(',')} ON CONFLICT (record_key) DO NOTHING`,
+      params
+    );
+  }
 }
 
 async function updateRecord(client, collection, record) {
@@ -154,9 +183,7 @@ async function connectAndLoad(collections) {
       if (!Array.isArray(seed)) {
         throw new Error(`Missing seed records for database collection "${collection}".`);
       }
-      for (const record of seed) {
-        await insertRecord(client, collection, record);
-      }
+      await insertManyRecords(client, collection, seed);
       const { name } = getTable(collection);
       const result = await client.query(`SELECT data FROM ${name}`);
       collections[collection].splice(0, collections[collection].length, ...result.rows.map((row) => row.data));
@@ -248,9 +275,41 @@ function isDatabaseConnected() {
   return connected;
 }
 
+// Logged-out tokens are kept in memory for fast per-request checks, but are
+// also persisted here so a server restart does not silently un-revoke every
+// session. Only the sha256 hash of the token is stored, never the token
+// itself.
+async function persistRevokedToken(tokenHash, expiresAt) {
+  if (!initialized) return;
+  try {
+    await getPool().query(
+      'INSERT INTO revoked_tokens (token_hash, expires_at) VALUES ($1, $2) ON CONFLICT (token_hash) DO NOTHING',
+      [tokenHash, expiresAt]
+    );
+    connected = true;
+  } catch (error) {
+    connected = false;
+    console.error(`Revoked token could not be persisted (${error.code || error.name || 'database error'}).`);
+    throw error;
+  }
+}
+
+// Called once at startup to repopulate the in-memory revocation set from
+// Neon, and to prune hashes for tokens that have already expired on their
+// own (so the table does not grow forever).
+async function loadActiveRevokedTokenHashes() {
+  if (!initialized) return [];
+  const pool = getPool();
+  await pool.query('DELETE FROM revoked_tokens WHERE expires_at <= now()');
+  const result = await pool.query('SELECT token_hash FROM revoked_tokens');
+  return result.rows.map((row) => row.token_hash);
+}
+
 module.exports = {
   connectAndLoad,
   isDatabaseConnected,
   persistRecord,
   removeRecord,
+  persistRevokedToken,
+  loadActiveRevokedTokenHashes,
 };

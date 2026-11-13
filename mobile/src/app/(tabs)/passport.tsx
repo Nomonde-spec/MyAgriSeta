@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
@@ -20,7 +22,7 @@ import { useAuth } from '@/context/auth-context';
 import { apiFetch } from '@/lib/api';
 import { palette, radius, spacing } from '@/theme';
 
-const passportRoles = ['learner', 'farmer', 'sdf'];
+const passportRoles = ['learner', 'farmer'];
 const skillLevels = ['Foundational', 'Developing', 'Practised', 'Advanced'] as const;
 
 type PassportSkill = {
@@ -41,13 +43,42 @@ type PassportCredential = {
   verificationStatus: string;
 };
 
+const passportRecordTypes = ['qualification', 'training', 'experience', 'achievement'] as const;
+type PassportRecordType = typeof passportRecordTypes[number];
+
+type PassportRecord = {
+  id: string;
+  recordType: PassportRecordType | 'certificate';
+  title: string;
+  organisation: string;
+  category: string;
+  level: string;
+  description: string;
+  startDate: string;
+  endDate: string;
+  status: string;
+  reference: string;
+  updatedAt: string;
+  documents: { id: string; filename: string; mimeType: string; size: number }[];
+  verification?: { comment?: string; requirements?: string[] };
+  verificationHistory?: { decision: string; comment: string; reviewedAt: string; requirements?: string[] }[];
+};
+
+type SelectedPassportDocument = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  data: string;
+};
+
 export default function PassportScreen() {
   const { session } = useAuth();
   const user = session?.user;
   const role = session?.activeRole ?? 'learner';
-  const isEligible = ['administrator', 'internal_staff'].includes(role) || passportRoles.includes(role);
+  const isEligible = passportRoles.includes(role);
   const [skills, setSkills] = useState<PassportSkill[]>([]);
   const [certificates, setCertificates] = useState<PassportCredential[]>([]);
+  const [records, setRecords] = useState<PassportRecord[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(true);
   const [skillError, setSkillError] = useState('');
   const [skillBusy, setSkillBusy] = useState(false);
@@ -58,6 +89,20 @@ export default function PassportScreen() {
   const [skillCategory, setSkillCategory] = useState('');
   const [skillLevel, setSkillLevel] = useState<typeof skillLevels[number]>('Foundational');
   const [skillDescription, setSkillDescription] = useState('');
+  const [recordType, setRecordType] = useState<PassportRecordType>('qualification');
+  const [recordTitle, setRecordTitle] = useState('');
+  const [recordOrganisation, setRecordOrganisation] = useState('');
+  const [recordCategory, setRecordCategory] = useState('');
+  const [recordLevel, setRecordLevel] = useState('');
+  const [recordDescription, setRecordDescription] = useState('');
+  const [recordStartDate, setRecordStartDate] = useState('');
+  const [recordEndDate, setRecordEndDate] = useState('');
+  const [recordBusy, setRecordBusy] = useState(false);
+  const [pickingDocument, setPickingDocument] = useState(false);
+  const [selectedDocuments, setSelectedDocuments] = useState<SelectedPassportDocument[]>([]);
+  const [editingRecordId, setEditingRecordId] = useState('');
+  const [recordError, setRecordError] = useState('');
+  const [showRecordForm, setShowRecordForm] = useState(false);
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Your profile';
   const initials = `${user?.firstName?.slice(0, 1) ?? ''}${user?.lastName?.slice(0, 1) ?? ''}`.toUpperCase();
   const profileFields = [user?.firstName, user?.lastName, user?.email, user?.phone, user?.organization];
@@ -67,10 +112,16 @@ export default function PassportScreen() {
     setSkillError('');
     setSkills([]);
     setCertificates([]);
+    setRecords([]);
     try {
-      const payload = await apiFetch<{ skills: PassportSkill[]; certificates: PassportCredential[] }>('/passport');
+      const payload = await apiFetch<{
+        skills: PassportSkill[];
+        certificates: PassportCredential[];
+        records: PassportRecord[];
+      }>('/passport');
       setSkills(Array.isArray(payload.skills) ? payload.skills : []);
       setCertificates(Array.isArray(payload.certificates) ? payload.certificates : []);
+      setRecords(Array.isArray(payload.records) ? payload.records : []);
     } catch (error) {
       setSkillError(error instanceof Error ? error.message : 'Your skills passport could not be loaded.');
     } finally {
@@ -88,6 +139,8 @@ export default function PassportScreen() {
     'MyAgriSETA Skills Passport',
     `Account holder: ${fullName}`,
     `Credentials recorded: ${certificates.length}`,
+    'Passport records:',
+    ...(records.length ? records.map((record) => `- ${record.title} (${record.status})`) : ['- None recorded']),
     'Self-reported skills (not verified):',
     ...(skills.length ? skills.map((skill) => `- ${skill.name} (${skill.level})`) : ['- None recorded']),
     'Credential issuer: not connected',
@@ -161,6 +214,128 @@ export default function PassportScreen() {
     }
   };
 
+  const saveRecord = async (action: 'save' | 'submit') => {
+    if (recordBusy) return;
+    setRecordBusy(true);
+    setRecordError('');
+    try {
+      const payload = await apiFetch<{ record: PassportRecord }>('/passport/records', {
+        method: 'POST',
+        body: JSON.stringify({
+          recordType,
+          ...(editingRecordId ? { id: editingRecordId } : {}),
+          title: recordTitle,
+          organisation: recordOrganisation,
+          category: recordCategory,
+          level: recordLevel,
+          description: recordDescription,
+          startDate: recordStartDate,
+          endDate: recordEndDate,
+          documents: selectedDocuments,
+          action,
+        }),
+      });
+      setRecords((current) => editingRecordId
+        ? current.map((record) => record.id === payload.record.id ? payload.record : record)
+        : [payload.record, ...current]);
+      setRecordTitle('');
+      setRecordOrganisation('');
+      setRecordCategory('');
+      setRecordLevel('');
+      setRecordDescription('');
+      setRecordStartDate('');
+      setRecordEndDate('');
+      setSelectedDocuments([]);
+      setEditingRecordId('');
+      setShowRecordForm(false);
+    } catch (error) {
+      setRecordError(error instanceof Error ? error.message : 'The passport record could not be saved.');
+    } finally {
+      setRecordBusy(false);
+    }
+  };
+
+  const editRecord = (record: PassportRecord) => {
+    if (!['Draft', 'Additional Information Required', 'Rejected'].includes(record.status)) return;
+    setEditingRecordId(record.id);
+    setRecordType(record.recordType === 'certificate' ? 'qualification' : record.recordType);
+    setRecordTitle(record.title);
+    setRecordOrganisation(record.organisation);
+    setRecordCategory(record.category);
+    setRecordLevel(record.level);
+    setRecordDescription(record.description);
+    setRecordStartDate(record.startDate);
+    setRecordEndDate(record.endDate);
+    setSelectedDocuments([]);
+    setRecordError('');
+    setShowRecordForm(true);
+  };
+
+  const selectRecordDocument = async () => {
+    if (pickingDocument || recordBusy || selectedDocuments.length >= 5) return;
+    setPickingDocument(true);
+    setRecordError('');
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/jpeg', 'image/png'],
+        copyToCacheDirectory: true,
+        multiple: false,
+        base64: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType?.toLowerCase() || (
+        asset.name.toLowerCase().endsWith('.pdf') ? 'application/pdf'
+          : asset.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'
+      );
+      if (!['application/pdf', 'image/jpeg', 'image/png'].includes(mimeType)) {
+        setRecordError('Choose a PDF, JPG, or PNG supporting document.');
+        return;
+      }
+      const data = (asset.base64 || await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      })).replace(/^data:[^,]+,/, '');
+      const size = Math.floor(data.length * 3 / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+      const total = [...selectedDocuments.map((document) => document.size), size].reduce((sum, value) => sum + value, 0);
+      if (!size || size > 2 * 1024 * 1024 || total > 5 * 1024 * 1024 ||
+          (asset.size !== undefined && asset.size !== size)) {
+        setRecordError('Supporting documents must be 2 MB or smaller each and 5 MB or smaller altogether.');
+        return;
+      }
+      setSelectedDocuments((current) => [...current, { filename: asset.name, mimeType, size, data }]);
+    } catch (error) {
+      setRecordError(error instanceof Error ? error.message : 'The supporting document could not be selected.');
+    } finally {
+      setPickingDocument(false);
+    }
+  };
+
+  const openRecordDocument = async (record: PassportRecord, document: PassportRecord['documents'][number]) => {
+    try {
+      const payload = await apiFetch<{ document: SelectedPassportDocument }>(
+        `/passport/records/${encodeURIComponent(record.id)}/documents/${encodeURIComponent(document.id)}`
+      );
+      if (Platform.OS === 'web') {
+        const bytes = Uint8Array.from(atob(payload.document.data), (character) => character.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: payload.document.mimeType }));
+        const link = window.document.createElement('a');
+        link.href = url;
+        link.download = payload.document.filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        return;
+      }
+      if (!FileSystem.cacheDirectory || !await Sharing.isAvailableAsync()) {
+        throw new Error('This device cannot open or share documents.');
+      }
+      const uri = `${FileSystem.cacheDirectory}${record.id}-${document.id}-${payload.document.filename.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+      await FileSystem.writeAsStringAsync(uri, payload.document.data, { encoding: FileSystem.EncodingType.Base64 });
+      await Sharing.shareAsync(uri, { mimeType: payload.document.mimeType, dialogTitle: 'Open Passport document' });
+    } catch (error) {
+      setRecordError(error instanceof Error ? error.message : 'The supporting document could not be opened.');
+    }
+  };
+
   const explainVerification = () => {
     Alert.alert(
       'QR verification unavailable',
@@ -211,6 +386,74 @@ export default function PassportScreen() {
       );
     }
   };
+
+  if (!isEligible) {
+    const roleAccess = {
+      employer: {
+        title: 'Applicant skills passports',
+        description: 'View skills and credentials only for applicants to your own eligible opportunities. Access is recorded.',
+        action: 'Open recruitment workspace',
+        onPress: () => router.push('/opportunities'),
+        limitation: 'Only submitted applications to your organisation’s opportunities are available. Independent credential verification is not connected.',
+      },
+      sdf: {
+        title: 'Workforce skills information',
+        description: 'Use your organisation’s workforce records to identify skills gaps and training needs.',
+        action: 'Open workforce planning',
+        onPress: () => router.push('/sdf-workforce'),
+        limitation: 'Access is limited to the SDF workforce workspace; employee passports are not available as a separate directory.',
+      },
+      training_provider: {
+        title: 'Training completion records',
+        description: 'Provider tools are available for managing your profile and training programme submissions.',
+        action: 'Open provider tools',
+        onPress: () => router.push({ pathname: '/learning', params: { section: 'Provider tools' } }),
+        limitation: 'Submitting or verifying learner completion records is not yet available.',
+      },
+      administrator: {
+        title: 'Passport administration',
+        description: 'Review Passport submissions and record verification decisions.',
+        action: 'Open verification queue',
+        onPress: () => router.push('/passport-review'),
+        limitation: 'This queue supports submitted records only. Issuer integrations and secure supporting-document uploads are not connected.',
+      },
+      internal_staff: {
+        title: 'Assigned credential review',
+        description: 'Review supporting documents attached to applications available to the internal-staff queue.',
+        action: 'Open review queue',
+        onPress: () => router.push('/review'),
+        limitation: 'There is no separate assigned passport-credential queue. Review access is limited to records and documents in the application queue.',
+      },
+    }[role as 'employer' | 'sdf' | 'training_provider' | 'administrator' | 'internal_staff'];
+
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.content}>
+            <Text style={styles.eyebrow}>AGRISKILLS</Text>
+            <Text style={styles.roleHeading}>Skills Passport</Text>
+            {roleAccess ? (
+              <View style={styles.rolePanel}>
+                <Text style={styles.sectionTitle}>{roleAccess.title}</Text>
+                <Text style={styles.roleDescription}>{roleAccess.description}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={roleAccess.onPress}
+                  style={styles.roleAction}
+                >
+                  <Text style={styles.roleActionText}>{roleAccess.action}</Text>
+                  <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+                </Pressable>
+                <Text style={styles.roleLimitation}>{roleAccess.limitation}</Text>
+              </View>
+            ) : (
+              <Text style={styles.roleDescription}>Passport access is not assigned to this account.</Text>
+            )}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -302,6 +545,118 @@ export default function PassportScreen() {
               <Ionicons name="download-outline" size={15} color={palette.primaryDark} />
             </Pressable>
           </View>
+
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow}>QUALIFICATIONS & EXPERIENCE</Text>
+              <Text style={styles.sectionTitle}>My records</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setRecordError('');
+                if (showRecordForm) {
+                  setEditingRecordId('');
+                  setSelectedDocuments([]);
+                }
+                setShowRecordForm((current) => !current);
+              }}
+              style={styles.addSkillButton}
+            >
+              <Ionicons name={showRecordForm ? 'close' : 'add'} size={15} color="#FFFFFF" />
+              <Text style={styles.addSkillText}>{showRecordForm ? 'Cancel' : 'Add record'}</Text>
+            </Pressable>
+          </View>
+          {showRecordForm ? (
+            <View style={styles.skillForm}>
+              <Text style={styles.formLabel}>Record type</Text>
+              <View style={styles.skillsRow}>
+                {passportRecordTypes.map((type) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: recordType === type }}
+                    key={type}
+                    onPress={() => setRecordType(type)}
+                    style={[styles.skillChip, recordType === type && styles.skillChipSelected]}
+                  >
+                    <Text style={[styles.skillText, recordType === type && styles.skillTextSelected]}>
+                      {type[0].toUpperCase() + type.slice(1)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.formLabel}>Title *</Text>
+              <TextInput accessibilityLabel="Passport record title" value={recordTitle} onChangeText={setRecordTitle} maxLength={120} style={styles.skillInput} placeholder="Qualification, course, role or achievement" />
+              <Text style={styles.formLabel}>Organisation or issuer</Text>
+              <TextInput accessibilityLabel="Passport record organisation" value={recordOrganisation} onChangeText={setRecordOrganisation} maxLength={120} style={styles.skillInput} placeholder="Organisation or provider" />
+              <Text style={styles.formLabel}>Category and level</Text>
+              <View style={styles.recordSplitRow}>
+                <TextInput accessibilityLabel="Passport record category" value={recordCategory} onChangeText={setRecordCategory} maxLength={80} style={[styles.skillInput, styles.recordSplitInput]} placeholder="Category" />
+                <TextInput accessibilityLabel="Passport record level" value={recordLevel} onChangeText={setRecordLevel} maxLength={80} style={[styles.skillInput, styles.recordSplitInput]} placeholder="Level" />
+              </View>
+              <Text style={styles.formLabel}>Start date (YYYY-MM-DD)</Text>
+              <TextInput accessibilityLabel="Passport record start date" value={recordStartDate} onChangeText={setRecordStartDate} maxLength={10} style={styles.skillInput} placeholder="2025-01-31" />
+              <Text style={styles.formLabel}>End date (YYYY-MM-DD)</Text>
+              <TextInput accessibilityLabel="Passport record end date" value={recordEndDate} onChangeText={setRecordEndDate} maxLength={10} style={styles.skillInput} placeholder="2025-12-31" />
+              <Text style={styles.formLabel}>Notes</Text>
+              <TextInput accessibilityLabel="Passport record notes" value={recordDescription} onChangeText={setRecordDescription} maxLength={1000} multiline style={[styles.skillInput, styles.skillNotesInput]} placeholder="Optional details. Do not include identity numbers or sensitive personal information." />
+              <Pressable accessibilityRole="button" disabled={pickingDocument || recordBusy || selectedDocuments.length >= 5} onPress={() => void selectRecordDocument()} style={[styles.attachButton, (pickingDocument || recordBusy) && styles.disabledButton]}>
+                <Ionicons name="attach-outline" size={16} color={palette.primary} />
+                <Text style={styles.attachText}>{pickingDocument ? 'Selecting...' : `Attach proof (${selectedDocuments.length}/5)`}</Text>
+              </Pressable>
+              {selectedDocuments.map((document) => (
+                <Text key={`${document.filename}-${document.size}`} style={styles.credentialStatusText}>{document.filename} · {(document.size / 1024).toFixed(0)} KB</Text>
+              ))}
+              {recordError ? <Text accessibilityRole="alert" style={styles.skillErrorText}>{recordError}</Text> : null}
+              <View style={styles.recordButtons}>
+                <Pressable accessibilityRole="button" disabled={recordBusy} onPress={() => void saveRecord('save')} style={[styles.saveSkillButton, styles.recordButton, recordBusy && styles.disabledButton]}>
+                  <Text style={styles.saveSkillText}>{recordBusy ? 'Saving...' : 'Save draft'}</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" disabled={recordBusy} onPress={() => void saveRecord('submit')} style={[styles.saveSkillButton, styles.recordButton, recordBusy && styles.disabledButton]}>
+                  <Text style={styles.saveSkillText}>{recordBusy ? 'Submitting...' : 'Submit for verification'}</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.disclaimer}>Submitted records remain unverified until reviewed by an administrator. Supporting document upload is not yet available.</Text>
+            </View>
+          ) : null}
+          {records.length === 0 ? (
+            <View style={styles.credentialCard}>
+              <View style={styles.credentialIcon}><Ionicons name="document-text-outline" size={16} color={palette.primary} /></View>
+              <View style={styles.credentialCopy}>
+                <Text style={styles.credentialName}>No additional records</Text>
+                <Text style={styles.credentialStatusText}>Add qualifications, agricultural training, experience or achievements.</Text>
+              </View>
+            </View>
+          ) : records.map((record) => (
+            <View key={record.id} style={styles.credentialCard}>
+              <View style={styles.credentialIcon}><Ionicons name="document-text-outline" size={16} color={palette.primary} /></View>
+              <View style={styles.credentialCopy}>
+                <Text style={styles.credentialName}>{record.title}</Text>
+                <Text style={styles.credentialStatusText}>
+                  {[record.recordType, record.organisation, record.level, record.status].filter(Boolean).join(' · ')}
+                </Text>
+                {record.verification?.comment ? <Text style={styles.skillDescription}>{record.verification.comment}</Text> : null}
+                {record.verification?.requirements?.length ? <Text style={styles.skillDescription}>Needed: {record.verification.requirements.join(', ')}</Text> : null}
+                {record.verificationHistory?.map((decision, index) => (
+                  <Text key={`${record.id}-review-${index}`} style={styles.skillDescription}>
+                    Review: {decision.decision.replaceAll('_', ' ')} · {decision.reviewedAt.slice(0, 10)}
+                    {decision.comment ? ` · ${decision.comment}` : ''}
+                    {decision.requirements?.length ? ` · Needed: ${decision.requirements.join(', ')}` : ''}
+                  </Text>
+                ))}
+                {record.documents?.map((document) => (
+                  <Pressable key={document.id} accessibilityRole="button" onPress={() => void openRecordDocument(record, document)}>
+                    <Text style={styles.documentLink}>Open {document.filename}</Text>
+                  </Pressable>
+                ))}
+                {['Draft', 'Additional Information Required', 'Rejected'].includes(record.status) ? (
+                  <Pressable accessibilityRole="button" onPress={() => editRecord(record)}>
+                    <Text style={styles.documentLink}>Edit and resubmit</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+          ))}
 
           <View style={styles.sectionHeader}>
             <View>
@@ -458,6 +813,12 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F3F8F5' },
   scrollContent: { flexGrow: 1, alignItems: 'center', paddingBottom: 92 },
   content: { width: '100%', maxWidth: 560, paddingHorizontal: spacing.md },
+  roleHeading: { color: palette.text, fontSize: 25, lineHeight: 32, fontWeight: '800', marginTop: spacing.sm },
+  rolePanel: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E8EEEA', borderRadius: radius.lg, padding: spacing.md, marginTop: spacing.md },
+  roleDescription: { color: palette.text, fontSize: 13, lineHeight: 19, marginTop: spacing.sm },
+  roleAction: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, backgroundColor: palette.primary, borderRadius: radius.md, paddingHorizontal: spacing.md, marginTop: spacing.md },
+  roleActionText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  roleLimitation: { color: palette.muted, fontSize: 11, lineHeight: 17, marginTop: spacing.md },
   hero: { width: '100%', height: 190, alignItems: 'center', backgroundColor: '#064632', paddingTop: spacing.sm },
   headingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: spacing.sm },
   eyebrow: { color: '#E8C968', fontSize: 11, fontWeight: '900', letterSpacing: 1.4 },
@@ -506,8 +867,14 @@ const styles = StyleSheet.create({
   addSkillButton: { minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 10, paddingHorizontal: 10, backgroundColor: palette.primary },
   addSkillText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
   skillForm: { gap: 7, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E8EEEA', borderRadius: 13, padding: spacing.md, marginBottom: spacing.sm },
+  recordSplitRow: { flexDirection: 'row', gap: spacing.sm },
+  recordSplitInput: { flex: 1 },
+  recordButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  recordButton: { flexGrow: 1, flexBasis: 140 },
   formLabel: { color: palette.text, fontSize: 12, fontWeight: '700', marginTop: 3 },
   skillInput: { minHeight: 42, borderRadius: 9, borderWidth: 1, borderColor: '#D9E3DD', backgroundColor: '#FFFFFF', paddingHorizontal: 11, color: palette.text, fontSize: 13 },
+  attachButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderWidth: 1, borderColor: '#C9D8CF', borderRadius: 9, backgroundColor: '#F3F8F5' },
+  attachText: { color: palette.primaryDark, fontSize: 11, fontWeight: '700' },
   skillNotesInput: { minHeight: 76, paddingTop: 10, textAlignVertical: 'top' },
   saveSkillButton: { minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: palette.primary, marginTop: 5 },
   saveSkillText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
@@ -518,6 +885,7 @@ const styles = StyleSheet.create({
   skillCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, borderRadius: 12, borderWidth: 1, borderColor: '#E8EEEA', backgroundColor: '#FFFFFF', padding: spacing.sm, marginBottom: 8 },
   skillCardCopy: { flex: 1, minWidth: 180 },
   skillDescription: { color: palette.text, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  documentLink: { color: palette.primary, fontSize: 11, fontWeight: '700', marginTop: 6 },
   skillVerification: { color: palette.warning, fontSize: 10, fontWeight: '700', marginTop: 5 },
   skillActions: { flexDirection: 'row', gap: 4 },
   iconButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#F3F8F5' },

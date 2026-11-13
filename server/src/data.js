@@ -417,9 +417,9 @@ const opportunities = [
 const savedOpportunities = [];
 
 const notifications = [
-  { id: 'note-1', title: 'Application review update', message: 'Your Farm Business Planning application is under review.', read: false },
-  { id: 'note-2', title: 'Upcoming training', message: 'The Soil Health workshop is scheduled for next Thursday.', read: false },
-  { id: 'note-3', title: 'Role access updated', message: 'Your access has been updated by an administrator.', read: true },
+  { id: 'note-1', userId: 'usr-learner', title: 'Application review update', message: 'Your Farm Business Planning application is under review.', read: false, isDemo: true, emailDeliveryStatus: 'disabled' },
+  { id: 'note-2', userId: 'usr-learner', title: 'Upcoming training', message: 'The Soil Health workshop is scheduled for next Thursday.', read: false, isDemo: true, emailDeliveryStatus: 'disabled' },
+  { id: 'note-3', userId: 'usr-learner', title: 'Role access updated', message: 'Your access has been updated by an administrator.', read: true, isDemo: true, emailDeliveryStatus: 'disabled' },
 ];
 
 const applications = [

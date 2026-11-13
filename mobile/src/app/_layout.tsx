@@ -28,6 +28,8 @@ export default function RootLayout() {
               <Stack.Screen name="index" />
               <Stack.Screen name="login" />
               <Stack.Screen name="register" />
+              <Stack.Screen name="forgot-password" />
+              <Stack.Screen name="reset-password" />
               <Stack.Screen name="applications" />
               <Stack.Screen name="farmer-market" />
               <Stack.Screen name="farmer-mentors" />
@@ -36,6 +38,7 @@ export default function RootLayout() {
               <Stack.Screen name="learning" />
               <Stack.Screen name="audit" />
               <Stack.Screen name="review" />
+              <Stack.Screen name="passport-review" />
               <Stack.Screen name="(tabs)" />
             </Stack>
           </NotificationCountProvider>

@@ -3,7 +3,6 @@ import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -126,7 +125,7 @@ export default function LoginScreen() {
 
             <Pressable
               accessibilityRole="button"
-              onPress={() => Alert.alert('Password recovery', 'Contact your administrator to reset your password.')}
+              onPress={() => router.push('/forgot-password')}
               style={styles.forgotButton}
             >
               <Text style={styles.forgotText}>Forgot password?</Text>

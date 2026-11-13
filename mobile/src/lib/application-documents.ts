@@ -34,6 +34,17 @@ export async function downloadOpportunityDocument(
   await downloadStoredDocument(document, filename, mimeType);
 }
 
+export async function downloadLearningResourceAttachment(
+  resourceId: string,
+  filename: string,
+  mimeType: string
+) {
+  const { attachment } = await apiFetch<{ attachment: StoredDocument }>(
+    `/learning/resources/${encodeURIComponent(resourceId)}/attachment`
+  );
+  await downloadStoredDocument(attachment, filename, mimeType);
+}
+
 async function downloadStoredDocument(document: StoredDocument, filename: string, mimeType: string) {
   const safeFilename = filename.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
   if (Platform.OS === 'web') {

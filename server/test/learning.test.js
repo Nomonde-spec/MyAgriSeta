@@ -639,7 +639,7 @@ test('provider listing submissions require ownership and administrator review be
   assert.equal(visible.response.status, 200);
 });
 
-test('only administrators can manage learning categories and in-app resources', async () => {
+test('only administrators can manage learning categories and publish programme materials', async () => {
   const learnerToken = await login('learner@myagriseta.local', 'Lerato123!');
   const adminToken = await login('admin@myagriseta.local', 'Admin123!');
   const denied = await request('/learning/categories', {
@@ -648,6 +648,19 @@ test('only administrators can manage learning categories and in-app resources', 
     body: JSON.stringify({ name: 'Learner-created category', description: 'Should be denied.' }),
   });
   assert.equal(denied.response.status, 403);
+
+  const deniedResource = await request('/learning/resources', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      title: 'Learner-created material',
+      summary: 'Only administrators can publish learning materials.',
+      categoryId: 'crop-plant',
+      programmeType: 'Short Course',
+      content: ['This publication must be denied.'],
+    }),
+  });
+  assert.equal(deniedResource.response.status, 403);
 
   const duplicateCategory = await request('/learning/categories', {
     method: 'POST',
@@ -670,13 +683,74 @@ test('only administrators can manage learning categories and in-app resources', 
     method: 'POST',
     headers: auth(adminToken),
     body: JSON.stringify({
-      title: 'Temporary learning guide',
-      summary: 'A guide used to test administrator content management.',
+      title: 'Temporary programme material',
+      summary: 'A material used to test administrator learning content management.',
       categoryId: category.body.category.id,
-      content: ['First paragraph.', 'Second paragraph.'],
+      programmeType: 'Short Course',
+      content: [],
+      attachment: {
+        filename: 'learning-material.pdf',
+        mimeType: 'application/pdf',
+        size: Buffer.byteLength('%PDF-1.4\n'),
+        data: Buffer.from('%PDF-1.4\n').toString('base64'),
+      },
     }),
   });
   assert.equal(resource.response.status, 201);
+  assert.equal(resource.body.resource.programmeType, 'Short Course');
+  assert.equal(resource.body.resource.attachment.filename, 'learning-material.pdf');
+  assert.equal('data' in resource.body.resource.attachment, false);
+
+  const textResource = await request('/learning/resources', {
+    method: 'POST',
+    headers: auth(adminToken),
+    body: JSON.stringify({
+      title: 'Temporary in-app guide',
+      summary: 'Text-only learning material for the management test.',
+      categoryId: category.body.category.id,
+      programmeType: 'Short Course',
+      content: ['First paragraph.', 'Second paragraph.'],
+    }),
+  });
+  assert.equal(textResource.response.status, 201);
+
+  const listedResources = await request('/learning/resources?programmeType=Short%20Course', {
+    headers: auth(learnerToken),
+  });
+  const listedResource = listedResources.body.resources.find((entry) => entry.id === resource.body.resource.id);
+  assert.ok(listedResource);
+  assert.equal('content' in listedResource, false);
+  assert.equal('data' in listedResource.attachment, false);
+
+  const resourceDetail = await request(`/learning/resources/${resource.body.resource.id}`, {
+    headers: auth(learnerToken),
+  });
+  assert.equal(resourceDetail.response.status, 200);
+  assert.equal('data' in resourceDetail.body.resource.attachment, false);
+
+  const materialDownload = await request(`/learning/resources/${resource.body.resource.id}/attachment`, {
+    headers: auth(learnerToken),
+  });
+  assert.equal(materialDownload.response.status, 200);
+  assert.equal(materialDownload.body.attachment.data, Buffer.from('%PDF-1.4\n').toString('base64'));
+
+  const invalidMaterial = await request('/learning/resources', {
+    method: 'POST',
+    headers: auth(adminToken),
+    body: JSON.stringify({
+      title: 'Invalid file',
+      summary: 'This file does not match the selected type.',
+      categoryId: category.body.category.id,
+      programmeType: 'Short Course',
+      attachment: {
+        filename: 'invalid.pdf',
+        mimeType: 'application/pdf',
+        size: 5,
+        data: Buffer.from('not a PDF').toString('base64'),
+      },
+    }),
+  });
+  assert.equal(invalidMaterial.response.status, 400);
 
   const inUse = await request(`/learning/categories/${category.body.category.id}`, {
     method: 'DELETE',
@@ -689,6 +763,11 @@ test('only administrators can manage learning categories and in-app resources', 
     headers: auth(adminToken),
   });
   assert.equal(deletedResource.response.status, 200);
+  const deletedTextResource = await request(`/learning/resources/${textResource.body.resource.id}`, {
+    method: 'DELETE',
+    headers: auth(adminToken),
+  });
+  assert.equal(deletedTextResource.response.status, 200);
 
   const deletedCategory = await request(`/learning/categories/${category.body.category.id}`, {
     method: 'DELETE',
@@ -700,6 +779,179 @@ test('only administrators can manage learning categories and in-app resources', 
   assert.equal(review.response.status, 200);
   assert.ok(Array.isArray(review.body.courses));
   assert.ok(Array.isArray(review.body.enrollments));
+});
+
+test('administrator publishes programmes for user enrolment and manages programme materials', async () => {
+  const adminToken = await login('admin', 'Admin123!');
+  const learnerToken = await login('learner', 'Lerato123!');
+  const farmerToken = await login('farmer', 'Sipho123!');
+  const adminHeaders = auth(adminToken);
+  const learnerHeaders = auth(learnerToken);
+  const farmerHeaders = auth(farmerToken);
+  const administratorLearningHome = await request('/learning/me', { headers: adminHeaders });
+  assert.deepEqual(administratorLearningHome.body.enrollments, []);
+  assert.deepEqual(administratorLearningHome.body.startedResources, []);
+
+  const deniedDashboard = await request('/learning/admin/dashboard', { headers: learnerHeaders });
+  assert.equal(deniedDashboard.response.status, 403);
+  const dashboardBefore = await request('/learning/admin/dashboard', { headers: adminHeaders });
+  assert.equal(dashboardBefore.response.status, 200);
+  assert.ok(Array.isArray(dashboardBefore.body.metrics));
+  assert.ok(Array.isArray(dashboardBefore.body.programmes));
+
+  const createdProgramme = await request('/learning/admin/programmes', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      title: 'Administrator managed farm programme',
+      description: 'A programme for testing administrator enrolment and assigned materials.',
+      requirements: 'Existing learner account.',
+      categoryId: 'crop-plant',
+      programmeType: 'Short Course',
+      providerId: 'provider-greenfields',
+      duration: '6 weeks',
+      deliveryMethod: 'Blended',
+      location: 'Limpopo',
+      startDate: '2026-12-01',
+      endDate: '2027-01-15',
+      capacity: 1,
+      facilitator: 'Programme facilitator',
+      eligibleRoles: ['learner'],
+      status: 'Published',
+    }),
+  });
+  assert.equal(createdProgramme.response.status, 201, createdProgramme.body.message);
+  const programmeId = createdProgramme.body.programme.id;
+  assert.equal(createdProgramme.body.programme.status, 'Published');
+  assert.equal(createdProgramme.body.programme.capacity, 1);
+  assert.equal(createdProgramme.body.programme.interestEnabled, true);
+
+  const administratorBookmarkDenied = await request(`/learning/courses/${programmeId}/saved`, {
+    method: 'POST',
+    headers: adminHeaders,
+  });
+  assert.equal(administratorBookmarkDenied.response.status, 403);
+
+  const administratorEnrolmentDenied = await request('/learning/admin/enrollments', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ userId: 'usr-learner', courseId: programmeId }),
+  });
+  assert.equal(administratorEnrolmentDenied.response.status, 403);
+
+  const administratorSelfEnrolmentDenied = await request('/learning/enrollments', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ courseId: programmeId, acknowledgedDemo: true, shareWithProvider: true }),
+  });
+  assert.equal(administratorSelfEnrolmentDenied.response.status, 403);
+
+  const enrollment = await request('/learning/enrollments', {
+    method: 'POST',
+    headers: learnerHeaders,
+    body: JSON.stringify({ courseId: programmeId, acknowledgedDemo: true, shareWithProvider: true }),
+  });
+  assert.equal(enrollment.response.status, 201, enrollment.body.message);
+  assert.equal(enrollment.body.enrollment.status, 'Submitted');
+
+  const duplicate = await request('/learning/enrollments', {
+    method: 'POST',
+    headers: learnerHeaders,
+    body: JSON.stringify({ courseId: programmeId, acknowledgedDemo: true, shareWithProvider: true }),
+  });
+  assert.equal(duplicate.response.status, 409);
+
+  const learnerPortal = await request('/learning/me', { headers: learnerHeaders });
+  assert.ok(learnerPortal.body.enrollments.some((entry) => entry.courseId === programmeId));
+
+  const material = await request('/learning/resources', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      title: 'Restricted programme notes',
+      summary: 'Notes available to learners enrolled in this programme.',
+      categoryId: 'crop-plant',
+      programmeType: 'Short Course',
+      programmeId,
+      publicationStatus: 'Draft',
+      content: ['Programme-specific learning notes.'],
+    }),
+  });
+  assert.equal(material.response.status, 201, material.body.message);
+  assert.equal(material.body.resource.publicationStatus, 'Draft');
+
+  const learnerDraftAccess = await request(`/learning/resources/${material.body.resource.id}`, { headers: learnerHeaders });
+  assert.equal(learnerDraftAccess.response.status, 404);
+  const publishedMaterial = await request(`/learning/resources/${material.body.resource.id}`, {
+    method: 'PATCH',
+    headers: adminHeaders,
+    body: JSON.stringify({ publicationStatus: 'Published' }),
+  });
+  assert.equal(publishedMaterial.response.status, 200);
+  const adminMaterialList = await request('/learning/resources', { headers: adminHeaders });
+  const adminListedMaterial = adminMaterialList.body.resources.find((entry) => entry.id === material.body.resource.id);
+  assert.equal(adminListedMaterial.programme.title, 'Administrator managed farm programme');
+  assert.equal(adminListedMaterial.programme.deliveryMethod, 'Blended');
+  const learnerMaterials = await request(`/learning/resources?programmeId=${programmeId}`, { headers: learnerHeaders });
+  const learnerListedMaterial = learnerMaterials.body.resources.find((entry) => entry.id === material.body.resource.id);
+  assert.ok(learnerListedMaterial);
+  assert.equal('programme' in learnerListedMaterial, false);
+  const farmerMaterials = await request(`/learning/resources?programmeId=${programmeId}`, { headers: farmerHeaders });
+  assert.ok(!farmerMaterials.body.resources.some((entry) => entry.id === material.body.resource.id));
+  const farmerDirectAccess = await request(`/learning/resources/${material.body.resource.id}`, { headers: farmerHeaders });
+  assert.equal(farmerDirectAccess.response.status, 404);
+
+  const startedMaterial = await request(`/learning/resources/${material.body.resource.id}/started`, {
+    method: 'POST',
+    headers: learnerHeaders,
+  });
+  assert.equal(startedMaterial.response.status, 201);
+  const administratorStartedMaterial = await request(`/learning/resources/${material.body.resource.id}/started`, {
+    method: 'POST',
+    headers: adminHeaders,
+  });
+  assert.equal(administratorStartedMaterial.response.status, 403);
+  const learnerHomeWithMaterial = await request('/learning/me', { headers: learnerHeaders });
+  assert.ok(learnerHomeWithMaterial.body.startedResources.some((entry) => entry.resource.id === material.body.resource.id));
+
+  const refreshedDashboard = await request('/learning/admin/dashboard', { headers: adminHeaders });
+  assert.ok(refreshedDashboard.body.programmes.some((entry) =>
+    entry.id === programmeId && entry.enrolmentCount === 1
+  ));
+  assert.ok(refreshedDashboard.body.enrollments.some((entry) =>
+    entry.id === enrollment.body.enrollment.id && entry.learner.id === 'usr-learner'
+  ));
+
+  const unpublishWhileEnrolled = await request(`/learning/admin/programmes/${programmeId}`, {
+    method: 'PATCH',
+    headers: adminHeaders,
+    body: JSON.stringify({ action: 'unpublish' }),
+  });
+  assert.equal(unpublishWhileEnrolled.response.status, 409);
+
+  const invalidWithdrawal = await request(`/learning/admin/enrollments/${enrollment.body.enrollment.id}`, {
+    method: 'PATCH',
+    headers: adminHeaders,
+    body: JSON.stringify({ action: 'withdraw', reason: 'No' }),
+  });
+  assert.equal(invalidWithdrawal.response.status, 400);
+  const withdrawn = await request(`/learning/admin/enrollments/${enrollment.body.enrollment.id}`, {
+    method: 'PATCH',
+    headers: adminHeaders,
+    body: JSON.stringify({ action: 'withdraw', reason: 'Learner requested withdrawal.' }),
+  });
+  assert.equal(withdrawn.response.status, 200);
+  assert.equal(withdrawn.body.enrollment.withdrawalReason, 'Learner requested withdrawal.');
+  const revokedMaterialAccess = await request(`/learning/resources/${material.body.resource.id}`, { headers: learnerHeaders });
+  assert.equal(revokedMaterialAccess.response.status, 404);
+  const learnerHomeAfterWithdrawal = await request('/learning/me', { headers: learnerHeaders });
+  assert.ok(!learnerHomeAfterWithdrawal.body.startedResources.some((entry) => entry.resource?.id === material.body.resource.id));
+  const archived = await request(`/learning/admin/programmes/${programmeId}`, {
+    method: 'PATCH',
+    headers: adminHeaders,
+    body: JSON.stringify({ action: 'archive' }),
+  });
+  assert.equal(archived.response.status, 200);
 });
 
 test('providers submit profile changes for administrator review and only manage their own participant progress', async () => {

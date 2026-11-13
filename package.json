@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.js",
-    "dev:mobile": "npm --prefix mobile start"
+    "dev:mobile": "npm --prefix mobile run start:lan"
   }
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BackButton } from '@/components/navigation/back-button';
@@ -45,6 +46,7 @@ type RoleRequest = {
 };
 
 export default function AdminScreen() {
+  const { section: requestedSection } = useLocalSearchParams<{ section?: string }>();
   const { session } = useAuth();
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [permissionsByRole, setPermissionsByRole] = useState<Record<string, string[]>>({});
@@ -75,7 +77,21 @@ export default function AdminScreen() {
   const [createError, setCreateError] = useState('');
   const [createFeedback, setCreateFeedback] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-
+  const knownSections = ['accounts', 'roles', 'announcements', 'agricultural-information', 'permissions'] as const;
+  const section = knownSections.find((item) => item === requestedSection) ?? 'overview';
+  const showAccounts = section === 'overview' || section === 'accounts';
+  const showRoleRequests = section === 'overview' || section === 'roles';
+  const showAnnouncements = section === 'overview' || section === 'announcements';
+  const showAgriculturalInformation = section === 'overview' || section === 'agricultural-information';
+  const showPermissions = section === 'overview' || section === 'permissions';
+  const sectionDetails = {
+    overview: ['Administration', 'Manage the administrator workspaces available to your account.'],
+    accounts: ['Account status & user management', 'Create accounts, maintain account details, and activate or deactivate access.'],
+    roles: ['Stakeholder verification & role requests', 'Review the legacy stakeholder role requests awaiting an administrator decision.'],
+    announcements: ['Announcements', 'Create, publish, and manage audience-targeted in-app announcements.'],
+    'agricultural-information': ['Agricultural platform information', 'Manage sourced market information, mentor records, and mentorship requests.'],
+    permissions: ['Roles, permissions & security', 'Review the server-managed permissions assigned to each account role.'],
+  }[section];
   const loadUsers = async () => {
     try {
       const [userPayload, requestPayload] = await Promise.all([
@@ -263,11 +279,19 @@ export default function AdminScreen() {
           showsVerticalScrollIndicator
           persistentScrollbar
         >
-          <Text style={styles.heading}>Administration</Text>
-          <Text style={styles.meta}>
-            Provision and maintain accounts, assign approved roles, review registration requests, and manage platform-wide information.
-          </Text>
+          <Text style={styles.heading}>{sectionDetails[0]}</Text>
+          <Text style={styles.meta}>{sectionDetails[1]}</Text>
+          {errorMessage ? (
+            <View style={styles.card}>
+              <Text accessibilityRole="alert" style={styles.errorText}>{errorMessage}</Text>
+              <Pressable onPress={() => { setLoading(true); void loadUsers(); }} style={styles.action}>
+                <Text style={styles.actionText}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
+          {showAccounts ? (
+            <>
           <Text style={styles.sectionHeading}>Create user account</Text>
           <View style={styles.card}>
             {([
@@ -311,7 +335,11 @@ export default function AdminScreen() {
               <Text style={styles.actionText}>{isCreating ? 'Creating…' : 'Create account'}</Text>
             </Pressable>
           </View>
+            </>
+          ) : null}
 
+          {showRoleRequests ? (
+            <>
           <Text style={styles.sectionHeading}>Legacy role requests ({roleRequests.length})</Text>
           {roleRequests.length === 0 ? (
             <Text style={styles.meta}>No historical role requests need review. New accounts are provisioned directly by an administrator.</Text>
@@ -390,7 +418,11 @@ export default function AdminScreen() {
               )}
             </View>
           ))}
+            </>
+          ) : null}
 
+          {showAccounts ? (
+            <>
           <Text style={styles.sectionHeading}>Registered accounts</Text>
         <TextInput
           value={search}
@@ -400,14 +432,7 @@ export default function AdminScreen() {
           accessibilityLabel="Search users"
         />
 
-        {errorMessage ? (
-          <View style={styles.card}>
-            <Text style={styles.errorText}>{errorMessage}</Text>
-            <Pressable onPress={() => { setLoading(true); loadUsers(); }} style={styles.action}>
-              <Text style={styles.actionText}>Try again</Text>
-            </Pressable>
-          </View>
-        ) : filtered.length === 0 ? (
+        {filtered.length === 0 ? (
           <Text style={styles.meta}>No matching user accounts.</Text>
         ) : filtered.map((user) => (
           <View key={user.id} style={styles.card}>
@@ -486,8 +511,24 @@ export default function AdminScreen() {
             ) : null}
           </View>
         ))}
-        <FarmerCuratedDataManagement />
-        <AnnouncementManagement />
+            </>
+          ) : null}
+          {showAgriculturalInformation ? <FarmerCuratedDataManagement /> : null}
+          {showAnnouncements ? <AnnouncementManagement /> : null}
+          {showPermissions ? (
+            <View>
+              <Text style={styles.sectionHeading}>Role permission assignments</Text>
+              <Text style={styles.meta}>Permissions are configured on the server and cannot be changed from this screen.</Text>
+              {roleOptions.map((role) => (
+                <View key={role} style={styles.card}>
+                  <Text style={styles.name}>{role.replaceAll('_', ' ')}</Text>
+                  <Text style={styles.meta}>{(permissionsByRole[role] || []).length
+                    ? (permissionsByRole[role] || []).join(' · ')
+                    : 'No permissions are assigned.'}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
         </ScrollView>
       </View>
     </SafeAreaView>

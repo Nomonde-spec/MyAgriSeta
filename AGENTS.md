@@ -185,3 +185,38 @@ When requirements conflict, prioritise:
 5. Maintainability, documentation, and visual polish.
 
 **Guiding principle:** Build a secure, functional, role-aware AgriConnect 360 platform. Do not expand beyond the approved scope or simulate official integrations that are not actually available.
+
+## 9. Mobile Application (`mobile/`)
+
+These mobile-specific instructions supplement the repository-wide requirements above.
+
+### Expo and React Native
+
+- Prioritize mobile-first patterns, performance, and cross-platform compatibility.
+- Expo APIs can change between SDK releases. Before writing code that uses Expo, EAS, or React Native APIs:
+  1. Read the major version of `expo` in `mobile/package.json`.
+  2. Consult the matching versioned documentation at `https://docs.expo.dev/versions/v<major>.0.0/`.
+  3. For other Expo questions, consult `https://docs.expo.dev/llms.txt` and follow its links to the relevant documentation.
+- Use Expo Router for navigation. Routes belong in `mobile/src/app/`; keep non-route code outside that directory. Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`. See https://docs.expo.dev/router/introduction.md.
+- Prefer recommended Expo modules over third-party libraries, and review available skills before adding dependencies. See https://docs.expo.dev/versions/latest/index.md.
+- Expo Go includes only its bundled native modules. After adding a library with native code, use a development build.
+- When `ios/` and `android/` directories are absent, Expo Continuous Native Generation creates them. Configure native behavior in app configuration and config plugins; do not create or hand-edit generated native projects.
+
+### Mobile Commands
+
+- If `mobile/bun.lock` is present, use `bunx` rather than `npx`.
+- Install Expo-compatible packages with `npx expo install <package>` (or `bunx expo install <package>` in a Bun project).
+- Common commands, run from `mobile/`:
+  ```bash
+  npx expo start
+  npx expo lint
+  npx tsc --noEmit
+  npx expo-doctor
+  ```
+- Run the mobile lint and type checks before declaring mobile work complete.
+
+### EAS Builds
+
+- Use EAS for cloud builds, signing, submission, and over-the-air updates; avoid local native build tooling unless the task specifically requires it.
+- Run EAS CLI as `npx eas-cli@latest <command>` or `bunx eas-cli <command>` for Bun projects.
+- Consult https://docs.expo.dev/eas/index.md for current EAS guidance.

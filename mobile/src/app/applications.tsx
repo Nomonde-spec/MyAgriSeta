@@ -10,7 +10,14 @@ import { useAuth } from '@/context/auth-context';
 import { apiFetch } from '@/lib/api';
 import { palette, radius, spacing } from '@/theme';
 
-type StatusUpdate = { status: string; date: string; feedback?: string };
+type StatusUpdate = {
+  status: string;
+  date: string;
+  feedback?: string;
+  interviewAt?: string;
+  inductionDate?: string;
+  employmentStartDate?: string;
+};
 type Application = {
   id: string;
   reference: string;
@@ -229,6 +236,9 @@ function ApplicationDetails({
             <Text style={styles.timelineStatus}>{update.status}</Text>
             <Text style={styles.dateText}>{formatDate(update.date)}</Text>
             {update.feedback ? <Text style={styles.mutedText}>{update.feedback}</Text> : null}
+            {update.interviewAt ? <Text style={styles.mutedText}>Interview scheduled: {update.interviewAt.replace('T', ' ')}</Text> : null}
+            {update.inductionDate ? <Text style={styles.mutedText}>Induction date: {update.inductionDate}</Text> : null}
+            {update.employmentStartDate ? <Text style={styles.mutedText}>Job start date: {update.employmentStartDate}</Text> : null}
           </View>
         </View>
       )) : <Text style={styles.mutedText}>No status updates are available.</Text>}

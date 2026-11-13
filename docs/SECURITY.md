@@ -13,20 +13,22 @@ This is a local-development prototype, not a production security assessment. See
 - Passwords are checked and stored as bcrypt hashes.
 - Native token persistence uses Expo SecureStore; web token persistence uses browser `sessionStorage`.
 - Application list reads are scoped to the authenticated user.
+- The server refuses to start without a configured `JWT_SECRET` (outside automated tests); there is no silent fallback to a guessable development secret.
+- CORS only accepts the origin(s) listed in `CLIENT_URL` (plus common local dev origins outside production). Non-browser clients, including the mobile app, are unaffected since they don't send an `Origin` header.
+- `/api/auth/login` and `/api/auth/register` are rate-limited per IP + identifier (8 attempts / 15 minutes) to slow down brute-force attempts.
+- Logout revocation is persisted to Neon (as a hash of the token, never the token itself) in addition to the in-memory check, so it survives a server restart.
 
 These controls do not establish production readiness. See [API.md](./API.md) for route-specific authorization behavior.
 
 ## Known gaps and privacy risks
 
-- The API falls back to a known development JWT secret when `JWT_SECRET` is absent. Set a strong secret and remove the fallback before any deployment.
 - Neon PostgreSQL is the only supported database; `DATABASE_URL` is mandatory at startup. The connection is verified with TLS.
-- CORS currently accepts any origin; `CLIENT_URL` is not used by the current CORS setup.
 - Service listings and service-detail requests enforce the account role's eligibility.
 - Published announcements are shared only with their configured audiences. Workflow notifications are scoped to the intended account.
 - Brevo SMTP credentials are read from server-only environment variables. Email delivery is disabled by default; do not expose SMTP keys in the mobile app or logs.
-- Logout revokes a token only in the current server process; revocation state is lost when the server restarts.
 - Web `sessionStorage` is accessible to JavaScript running on the page. Protect the web client against cross-site scripting and do not consider this equivalent to native secure storage.
-- There is no login rate limiting, email verification, self-service password reset, or token refresh. Administrative account deactivation prevents deactivating the current or last active administrator.
+- Self-service password reset is available only when Brevo email is enabled. Reset codes are random 256-bit values: only their SHA-256 hash is stored, they expire after 30 minutes, work once, are never logged, and the request endpoint returns the same response for unknown emails. There is no email verification or token refresh. Administrative account deactivation prevents deactivating the current or last active administrator.
+- The rate limiter is in-memory and per-process; it resets on restart and does not share state across multiple server instances. It is also not proxy-aware (`req.ip` reflects the connecting socket, not an `X-Forwarded-For` header), which matters if this is deployed behind a reverse proxy or load balancer.
 - Role assignment depends on the administrator's process; the app does not independently verify identity or role references against CIPC, educational institutions, agricultural bodies, AgriSETA, or QCTO.
 - Existing Neon self-registration records with matching audit history may be moved to pending review at startup. Review existing accounts and pending requests before deployment. MongoDB data is not migrated automatically.
 - Synthetic data and prototype content are not verified official AgriSETA information.

@@ -210,6 +210,9 @@ export default function HomeScreen() {
               ))}
             </View>
 
+            {['learner', 'farmer'].includes(role) ? <PassportSummaryCard /> : null}
+            {isAdministrator ? <AdminLearningOverview /> : null}
+
             <View style={styles.sectionHeader}>
               <View>
                 <Text style={styles.sectionEyebrow}>STAY INFORMED</Text>
@@ -394,6 +397,7 @@ function LearnerDashboard({
                   <LearnerMetric icon="ribbon-outline" label="Certificates" value={certificateCount} />
                   <LearnerMetric icon="reader-outline" label="Guides started" value={startedGuides.length} />
                 </View>
+                <PassportSummaryCard />
                 <View style={learnerDashboardStyles.columns}>
                   <View style={learnerDashboardStyles.primaryColumn}>
                     {featuredEnrollment ? (
@@ -493,6 +497,46 @@ function LearnerDashboard({
   );
 }
 
+function PassportSummaryCard() {
+  const [summary, setSummary] = useState<{ skills: number; certificates: number; qualifications: number } | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ skills: number; certificates: number; qualifications: number }>('/passport/me/summary')
+      .then((payload) => {
+        if (active) setSummary(payload);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      });
+    return () => { active = false; };
+  }, []);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => router.push('/passport')}
+      style={styles.latestCard}
+    >
+      <View style={styles.latestIcon}>
+        <Ionicons name="id-card-outline" size={18} color={palette.primary} />
+      </View>
+      <View style={styles.latestText}>
+        <Text style={styles.latestTitle}>AgriSkills Passport</Text>
+        <Text style={styles.latestDescription}>
+          {error
+            ? 'Summary unavailable. Open your Passport to try again.'
+            : summary
+              ? `${summary.skills} skills · ${summary.qualifications} qualifications · ${summary.certificates} credentials`
+              : 'Loading your skills and credentials...'}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={17} color={palette.muted} />
+    </Pressable>
+  );
+}
+
 function LearnerMetric({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number }) {
   return (
     <View style={learnerDashboardStyles.metricCard}>
@@ -550,59 +594,80 @@ const learnerDashboardStyles = StyleSheet.create({
 });
 
 function getQuickActions(role: string): QuickAction[] {
-  const service = (id: string) => () => router.push({ pathname: '/service', params: { id } });
   const services = () => router.push('/services');
   const opportunities = () => router.push('/opportunities');
+  const farmerFunding = () => router.push('/farmer-funding');
   const applications = () => router.push('/applications');
   const review = () => router.push('/review');
   const audit = () => router.push('/audit');
   const notifications = () => router.push('/notifications');
-  const admin = () => router.push('/admin');
+  const admin = (section: string) => () => router.push({ pathname: '/admin', params: { section } });
+  const learningAdmin = () => router.push({ pathname: '/learning', params: { section: 'Learning administration' } });
+  const learnerOpportunities = (category: string) => () => router.push({ pathname: '/opportunities', params: { category } });
+  const employerWorkspace = (workspace: string) => () => router.push({ pathname: '/opportunities', params: { workspace } });
+  const providerWorkspace = (workspace: string) => () => router.push({ pathname: '/opportunities', params: { workspace } });
+  const staffReview = (section: string) => () => router.push({ pathname: '/review', params: { section } });
 
   const actionsByRole: Record<string, QuickAction[]> = {
     learner: [
-      { label: 'Find learning', icon: 'search-outline', tone: 'green', onPress: service('svc-learn') },
-      { label: 'My passport', icon: 'id-card-outline', tone: 'gold', onPress: service('svc-passport') },
-      { label: 'Applications', icon: 'document-text-outline', tone: 'blue', onPress: applications },
-      { label: 'Explore opportunities', icon: 'sparkles-outline', tone: 'coral', onPress: opportunities },
+      { label: 'Learning & study materials', icon: 'book-outline', tone: 'green', onPress: () => router.push('/learning') },
+      { label: 'Bursaries', icon: 'wallet-outline', tone: 'gold', onPress: learnerOpportunities('Bursary') },
+      { label: 'Learnerships', icon: 'school-outline', tone: 'blue', onPress: learnerOpportunities('Learnership') },
+      { label: 'Funding opportunities', icon: 'cash-outline', tone: 'coral', onPress: learnerOpportunities('Funding') },
+      { label: 'Agricultural jobs', icon: 'briefcase-outline', tone: 'coral', onPress: learnerOpportunities('Employment') },
+      { label: 'Internships', icon: 'search-outline', tone: 'green', onPress: learnerOpportunities('Internship') },
+      { label: 'My AgriSkills Passport', icon: 'id-card-outline', tone: 'gold', onPress: () => router.push('/passport') },
+      { label: 'Applications & outcomes', icon: 'document-text-outline', tone: 'blue', onPress: applications },
+      { label: 'Opportunity notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
     ],
     farmer: [
-      { label: 'Farm hub', icon: 'leaf-outline', tone: 'green', onPress: () => router.push('/farmer') },
-      { label: 'Find training', icon: 'school-outline', tone: 'gold', onPress: () => router.push({ pathname: '/learning', params: { section: 'Courses' } }) },
-      { label: 'Funding & support', icon: 'wallet-outline', tone: 'blue', onPress: opportunities },
-      { label: 'Mentor interest', icon: 'people-circle-outline', tone: 'coral', onPress: () => router.push({ pathname: '/opportunities', params: { category: 'Mentorship' } }) },
+      { label: 'Farming resources', icon: 'book-outline', tone: 'green', onPress: () => router.push({ pathname: '/learning', params: { section: 'Resources' } }) },
+      { label: 'Markets & prices', icon: 'trending-up-outline', tone: 'gold', onPress: () => router.push('/farmer-market') },
+      { label: 'Funding & support', icon: 'wallet-outline', tone: 'blue', onPress: farmerFunding },
+      { label: 'AgriMentor', icon: 'people-circle-outline', tone: 'coral', onPress: () => router.push('/farmer-mentors') },
+      { label: 'Applications', icon: 'document-text-outline', tone: 'green', onPress: applications },
+      { label: 'My farming skills passport', icon: 'id-card-outline', tone: 'blue', onPress: () => router.push('/passport') },
+      { label: 'Announcements', icon: 'notifications-outline', tone: 'gold', onPress: notifications },
     ],
     employer: [
-      { label: 'Employer services', icon: 'business-outline', tone: 'green', onPress: service('svc-employer') },
-      { label: 'Find providers', icon: 'people-outline', tone: 'gold', onPress: service('svc-provider') },
-      { label: 'Opportunities', icon: 'sparkles-outline', tone: 'blue', onPress: opportunities },
-      { label: 'My applications', icon: 'document-text-outline', tone: 'coral', onPress: applications },
+      { label: 'Employer profile', icon: 'business-outline', tone: 'green', onPress: () => router.push('/profile') },
+      { label: 'Manage opportunities', icon: 'briefcase-outline', tone: 'gold', onPress: employerWorkspace('manage') },
+      { label: 'Review applicants', icon: 'people-outline', tone: 'blue', onPress: employerWorkspace('applicants') },
+      { label: 'Applicant skills passports', icon: 'id-card-outline', tone: 'coral', onPress: employerWorkspace('passports') },
+      { label: 'Funding support', icon: 'wallet-outline', tone: 'coral', onPress: employerWorkspace('funding') },
+      { label: 'Application updates', icon: 'notifications-outline', tone: 'green', onPress: notifications },
     ],
     sdf: [
-      { label: 'Skills passport', icon: 'id-card-outline', tone: 'green', onPress: service('svc-passport') },
-      { label: 'Learning services', icon: 'school-outline', tone: 'gold', onPress: service('svc-learn') },
-      { label: 'Training providers', icon: 'people-outline', tone: 'blue', onPress: service('svc-provider') },
-      { label: 'Opportunities', icon: 'sparkles-outline', tone: 'coral', onPress: opportunities },
-      { label: 'My applications', icon: 'document-text-outline', tone: 'green', onPress: applications },
+      { label: 'Workforce planning', icon: 'people-outline', tone: 'green', onPress: () => router.push({ pathname: '/sdf-workforce', params: { section: 'wsp' } }) },
+      { label: 'Programme submissions', icon: 'document-text-outline', tone: 'gold', onPress: opportunities },
+      { label: 'Skills resources', icon: 'school-outline', tone: 'blue', onPress: () => router.push({ pathname: '/learning', params: { section: 'Resources' } }) },
+      { label: 'Workforce skills information', icon: 'id-card-outline', tone: 'green', onPress: () => router.push({ pathname: '/sdf-workforce', params: { section: 'assessment' } }) },
+      { label: 'Submission updates', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
     ],
     training_provider: [
-      { label: 'Provider services', icon: 'business-outline', tone: 'green', onPress: service('svc-provider') },
-      { label: 'Learning services', icon: 'school-outline', tone: 'gold', onPress: service('svc-learn') },
-      { label: 'Opportunities', icon: 'sparkles-outline', tone: 'blue', onPress: opportunities },
-      { label: 'My applications', icon: 'document-text-outline', tone: 'coral', onPress: applications },
+      { label: 'Provider profile', icon: 'business-outline', tone: 'green', onPress: () => router.push({ pathname: '/learning', params: { section: 'Provider tools' } }) },
+      { label: 'Programme submissions', icon: 'school-outline', tone: 'gold', onPress: providerWorkspace('submissions') },
+      { label: 'Review outcomes', icon: 'checkmark-done-outline', tone: 'blue', onPress: providerWorkspace('outcomes') },
+      { label: 'Programme notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
     ],
     administrator: [
-      { label: 'Manage users & announcements', icon: 'people-outline', tone: 'green', onPress: admin },
-      { label: 'Reports & audit activity', icon: 'document-text-outline', tone: 'gold', onPress: audit },
-      { label: 'Service directory', icon: 'grid-outline', tone: 'blue', onPress: services },
-      { label: 'Notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
-      { label: 'Review applications', icon: 'clipboard-outline', tone: 'green', onPress: review },
+      { label: 'Accounts & status', icon: 'people-outline', tone: 'green', onPress: admin('accounts') },
+      { label: 'Stakeholder role requests', icon: 'person-add-outline', tone: 'blue', onPress: admin('roles') },
+      { label: 'Review opportunities', icon: 'checkmark-done-outline', tone: 'gold', onPress: () => router.push({ pathname: '/opportunities', params: { workspace: 'review' } }) },
+      { label: 'My posted job applicants', icon: 'people-outline', tone: 'coral', onPress: () => router.push({ pathname: '/opportunities', params: { workspace: 'applicants' } }) },
+      { label: 'Learning programmes', icon: 'school-outline', tone: 'blue', onPress: learningAdmin },
+      { label: 'Review applications', icon: 'clipboard-outline', tone: 'coral', onPress: review },
+      { label: 'Passport management', icon: 'id-card-outline', tone: 'blue', onPress: () => router.push('/passport') },
+      { label: 'Reports & audit logs', icon: 'stats-chart-outline', tone: 'green', onPress: audit },
+      { label: 'Announcements', icon: 'megaphone-outline', tone: 'gold', onPress: admin('announcements') },
+      { label: 'Agricultural platform information', icon: 'leaf-outline', tone: 'green', onPress: admin('agricultural-information') },
+      { label: 'Permissions & security', icon: 'shield-checkmark-outline', tone: 'coral', onPress: admin('permissions') },
     ],
     internal_staff: [
-      { label: 'Review queue', icon: 'clipboard-outline', tone: 'green', onPress: review },
-      { label: 'Review opportunities', icon: 'checkmark-done-outline', tone: 'gold', onPress: opportunities },
-      { label: 'Service directory', icon: 'grid-outline', tone: 'blue', onPress: services },
-      { label: 'Notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
+      { label: 'Application review queue', icon: 'clipboard-outline', tone: 'green', onPress: staffReview('queue') },
+      { label: 'Documents & completeness checks', icon: 'document-attach-outline', tone: 'gold', onPress: staffReview('documents') },
+      { label: 'Review feedback & information requests', icon: 'chatbox-ellipses-outline', tone: 'blue', onPress: staffReview('feedback') },
+      { label: 'Review services & access limits', icon: 'shield-checkmark-outline', tone: 'coral', onPress: services },
     ],
   };
 
@@ -611,6 +676,108 @@ function getQuickActions(role: string): QuickAction[] {
 
 function getQuickActionsDestination(role: string) {
   return getQuickActions(role)[0].onPress;
+}
+
+type AdminLearningMetric = { label: string; value: number };
+type AdminLearningOverviewData = {
+  metrics: AdminLearningMetric[];
+  programmes: { id: string; title: string; status: string; enrolmentCount: number }[];
+  recentMaterials: { id: string; title: string; programmeType?: string; uploadedAt?: string }[];
+};
+
+function AdminLearningOverview() {
+  const [data, setData] = useState<AdminLearningOverviewData | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch<AdminLearningOverviewData>('/learning/admin/dashboard')
+      .then((payload) => {
+        if (!Array.isArray(payload.metrics) || !Array.isArray(payload.programmes) || !Array.isArray(payload.recentMaterials)) {
+          throw new Error('The learning dashboard returned incomplete data.');
+        }
+        if (active) {
+          setData(payload);
+          setError('');
+        }
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(cause instanceof Error ? cause.message : 'Learning programme data could not be loaded.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [retry]);
+
+  const openLearningAdmin = () =>
+    router.push({ pathname: '/learning', params: { section: 'Learning administration' } });
+  const metrics = data?.metrics ?? [];
+
+  return (
+    <View style={styles.adminLearningPanel}>
+      <View style={styles.sectionHeader}>
+        <View>
+          <Text style={styles.sectionEyebrow}>AGRILEARN</Text>
+          <Text style={styles.sectionTitle}>Learning programme management</Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={openLearningAdmin} style={styles.viewAll}>
+          <Text style={styles.viewAllText}>Manage</Text>
+        </Pressable>
+      </View>
+      {loading ? (
+        <ActivityIndicator color={palette.primary} style={styles.adminLearningLoading} />
+      ) : error ? (
+        <View style={styles.adminLearningError}>
+          <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setLoading(true);
+              setRetry((current) => current + 1);
+            }}
+            style={styles.retryButton}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <>
+          <View style={styles.adminLearningMetricGrid}>
+            {metrics.map((metric) => (
+              <View key={metric.label} style={styles.adminLearningMetricCard}>
+                <Text style={styles.adminLearningMetricValue}>{metric.value}</Text>
+                <Text style={styles.adminLearningMetricLabel}>{metric.label}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={styles.adminLearningActions}>
+            <Pressable accessibilityRole="button" onPress={openLearningAdmin} style={styles.adminLearningPrimary}>
+              <Ionicons name="add-circle-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.adminLearningPrimaryText}>Create or manage programme</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.adminLearningSubheading}>Recently published materials</Text>
+          {data?.recentMaterials.length ? data.recentMaterials.slice(0, 3).map((material) => (
+            <View key={material.id} style={styles.adminLearningRecent}>
+              <Ionicons name="document-text-outline" size={17} color={palette.primary} />
+              <View style={styles.adminLearningRecentText}>
+                <Text style={styles.latestTitle}>{material.title}</Text>
+                <Text style={styles.latestDescription}>
+                  {material.programmeType || 'Learning material'}
+                  {material.uploadedAt ? ` · ${new Date(material.uploadedAt).toLocaleDateString()}` : ''}
+                </Text>
+              </View>
+            </View>
+          )) : (
+            <Text style={styles.latestDescription}>No programme materials have been published yet.</Text>
+          )}
+        </>
+      )}
+    </View>
+  );
 }
 
 function getRoleIcon(role: string): keyof typeof Ionicons.glyphMap {
@@ -629,7 +796,7 @@ function getRoleIcon(role: string): keyof typeof Ionicons.glyphMap {
 function getFeatureAction(role: string) {
   if (role === 'administrator') return 'Manage your platform';
   if (role === 'internal_staff') return 'Open your review queue';
-  if (role === 'farmer') return 'Open your farm hub';
+  if (role === 'farmer') return 'Explore farming services';
   if (role === 'employer') return 'Explore employer services';
   if (role === 'sdf') return 'Explore skills services';
   if (role === 'training_provider') return 'Explore provider services';
@@ -764,6 +931,19 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   latestIcon: { width: 30, height: 30, borderRadius: 10, backgroundColor: '#E3F0E9', alignItems: 'center', justifyContent: 'center', marginRight: 9 },
+  adminLearningPanel: { marginTop: 22, padding: 13, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5ECE7', borderRadius: 15 },
+  adminLearningLoading: { marginVertical: 22 },
+  adminLearningError: { alignItems: 'center', paddingVertical: 12 },
+  adminLearningMetricGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 8, marginTop: 3 },
+  adminLearningMetricCard: { width: '31.5%', minHeight: 65, justifyContent: 'center', backgroundColor: '#F3F8F5', borderRadius: 10, paddingHorizontal: 9, paddingVertical: 8 },
+  adminLearningMetricValue: { color: palette.primary, fontSize: 18, fontWeight: '800' },
+  adminLearningMetricLabel: { color: palette.muted, fontSize: 8, lineHeight: 12, marginTop: 3 },
+  adminLearningActions: { gap: 7, marginTop: 12 },
+  adminLearningPrimary: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: palette.primary, borderRadius: 9, paddingHorizontal: 10 },
+  adminLearningPrimaryText: { color: '#FFFFFF', fontSize: 10, fontWeight: '700' },
+  adminLearningSubheading: { color: palette.text, fontSize: 10, fontWeight: '800', marginTop: 14, marginBottom: 5 },
+  adminLearningRecent: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
+  adminLearningRecentText: { flex: 1 },
   latestText: { flex: 1, marginRight: 8 },
   latestTitle: { color: palette.text, fontSize: 10, fontWeight: '700' },
   latestDescription: { flex: 1, color: palette.muted, fontSize: 9, lineHeight: 14 },

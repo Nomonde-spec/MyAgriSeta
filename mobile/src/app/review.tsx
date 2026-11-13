@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BackButton } from '@/components/navigation/back-button';
@@ -30,7 +31,13 @@ type ReviewApplication = {
 };
 
 export default function ReviewScreen() {
+  const { section: requestedSection } = useLocalSearchParams<{ section?: string }>();
   const { session } = useAuth();
+  const isInternalStaff = session?.activeRole === 'internal_staff';
+  const requestedSectionValue = typeof requestedSection === 'string' ? requestedSection : '';
+  const section = isInternalStaff && ['documents', 'feedback'].includes(requestedSectionValue)
+    ? requestedSectionValue
+    : 'queue';
   const [items, setItems] = useState<ReviewApplication[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -41,6 +48,11 @@ export default function ReviewScreen() {
   const [documentError, setDocumentError] = useState('');
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const visibleItems = section === 'documents'
+    ? items.filter((item) => item.documents.length > 0)
+    : section === 'feedback'
+      ? items.filter((item) => item.status === 'Additional Information Required' || Boolean(item.feedback) || item.outstandingRequirements.length > 0)
+      : items;
 
   useEffect(() => {
     let isCurrent = true;
@@ -126,7 +138,20 @@ export default function ReviewScreen() {
           showsVerticalScrollIndicator
           persistentScrollbar
         >
-          <Text style={styles.heading}>Application review queue</Text>
+          <Text style={styles.heading}>
+            {isInternalStaff
+              ? section === 'documents'
+                ? 'Application documents and completeness'
+                : section === 'feedback'
+                  ? 'Review feedback and information requests'
+                  : 'Staff application review queue'
+              : 'Application review queue'}
+          </Text>
+          {isInternalStaff ? (
+            <Text style={styles.meta}>
+              Review access is role-protected, but individual task assignments and private reviewer notes are not configured. Your feedback is visible to the applicant. Administrators make final approval or rejection decisions.
+            </Text>
+          ) : null}
         {errorMessage ? (
           <View style={styles.stateBlock}>
             <Text style={styles.errorText}>{errorMessage}</Text>
@@ -134,10 +159,16 @@ export default function ReviewScreen() {
               <Text style={styles.retryText}>Try again</Text>
             </Pressable>
           </View>
-        ) : items.length === 0 ? (
-          <Text style={styles.emptyState}>There are no applications to review.</Text>
+        ) : visibleItems.length === 0 ? (
+          <Text style={styles.emptyState}>
+            {section === 'documents'
+              ? 'No reviewable applications currently have supporting documents.'
+              : section === 'feedback'
+                ? 'No applications currently need additional information or have review feedback.'
+                : 'There are no applications to review.'}
+          </Text>
         ) : (
-          items.map((item) => (
+          visibleItems.map((item) => (
             <View key={item.id} style={styles.row}>
               <Text style={styles.serviceName}>{item.serviceName}</Text>
               <Text style={styles.meta}>Ref: {item.reference}</Text>
@@ -190,13 +221,16 @@ export default function ReviewScreen() {
                     accessibilityLabel={`Feedback for ${item.serviceName}`}
                     maxLength={500}
                     multiline
-                    placeholder="Feedback for the applicant (optional)"
+                    placeholder="Review feedback (visible to the applicant)"
                     value={feedback[item.id] ?? ''}
                     onChangeText={(value) => setFeedback((current) => ({ ...current, [item.id]: value }))}
                     style={styles.requirementsInput}
                   />
                   <View style={styles.actions}>
-                    {['Under Review', 'Additional Information Required', 'Approved', 'Rejected'].map((status) => (
+                    {(isInternalStaff
+                      ? ['Under Review', 'Additional Information Required']
+                      : ['Under Review', 'Additional Information Required', 'Approved', 'Rejected']
+                    ).map((status) => (
                       <Pressable
                         key={status}
                         accessibilityRole="button"

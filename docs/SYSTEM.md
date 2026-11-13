@@ -86,15 +86,15 @@ The server reads:
 | Variable | Purpose | Local default / guidance |
 |---|---|---|
 | `PORT` | HTTP listen port | `3000` |
-| `JWT_SECRET` | Signs and verifies access tokens | Must be explicitly set to a strong random value outside disposable local development; source currently has a development fallback |
+| `JWT_SECRET` | Signs and verifies access tokens | Required outside automated tests; production requires at least 32 characters |
 | `DATABASE_URL` | Neon PostgreSQL connection string | Required in every environment; the API refuses to start without a valid Neon endpoint |
-| `CLIENT_URL` | Listed in `.env.example` as the client origin | The current CORS configuration does not use this variable and accepts any origin |
+| `CLIENT_URL` | Comma-separated list of approved browser origins | CORS allows these origins plus known local Expo origins outside production |
 
 ### Mobile app
 
-In a separate terminal, install dependencies in `mobile/` and run `npm run dev`. The root `npm run dev` also starts the Expo client. `EXPO_PUBLIC_API_URL` overrides the API base URL; its default is `http://localhost:3000/api`. For a physical device, use a development-machine address reachable from the device instead of `localhost`. Use HTTPS for deployed environments.
+In a separate terminal, install dependencies in `mobile/` and run `npm run dev`; use `npm run start:lan` or the root `npm run dev:mobile` when testing with Expo Go. The API listens on `0.0.0.0` by default so a phone on the same network can reach it. `EXPO_PUBLIC_API_URL` overrides the API base URL; its default is `http://localhost:3000/api`. On native platforms, a loopback URL is replaced with the Expo development server host, because `localhost` on a phone refers to the phone. Permit inbound TCP port 3000 through the development computer's private-network firewall when needed. Use HTTPS for deployed environments.
 
-The repository does not currently include `mobile/.env.example`; do not follow instructions that assume it exists.
+`mobile/.env.example` documents the optional API URL override. Never put secrets in `EXPO_PUBLIC_*` variables.
 
 ### Tests
 
@@ -107,10 +107,10 @@ The full route list, request bodies, response envelopes, and endpoint-specific c
 - Learners can self-register and sign in immediately. Other public stakeholder role requests remain inactive until administrator verification; administrators can also provision accounts, assign roles, update account details/passwords, and manage account status. Permissions derive from the server-side active role.
 - Administrator and internal-staff roles cannot be self-registered. Historical role requests can still be reviewed by administrators.
 - Neon PostgreSQL is the only supported database; `DATABASE_URL` is mandatory in every environment. Startup fails rather than falling back to memory.
-- Role assignment does not independently verify identity or role claims against official sources. Email verification, external identity/registry integrations, and login rate limiting are not configured.
+- Role assignment does not independently verify identity or role claims against official sources. Email verification and external identity/registry integrations are not configured. Login and registration have an in-memory per-IP-and-identifier rate limit; it resets on restart and is not shared across instances.
 - On Neon startup, identifiable legacy self-registered accounts are made inactive and placed in the admin review queue; other pre-existing accounts without a matching audit entry require a manual account audit.
 - The client stores native tokens with Expo SecureStore and web tokens in tab-scoped `sessionStorage`.
-- Client logout deletes its local token and the API revokes it in the current process. The in-memory revocation list is lost on server restart.
+- Sign-out calls the API to revoke the current token and deletes it locally even if the API call fails. The API persists token hashes and expiries in Neon and restores active revocations after restart; the client warns if server revocation could not be confirmed.
 - Published announcements are filtered by audience and schedule; individual workflow notifications are scoped to the intended account.
 - Service listings and details enforce role eligibility.
 
@@ -119,15 +119,15 @@ The full route list, request bodies, response envelopes, and endpoint-specific c
 Before any real-user or production use, address at least the following:
 
 1. Add multi-instance cache consistency, a versioned migration process, and tested backup/recovery for Neon.
-2. Remove the development JWT fallback, rotate secrets through managed configuration, and add appropriate token revocation/refresh and password-reset flows.
-3. Restrict CORS to explicitly approved origins; use HTTPS and production-safe deployment settings.
+2. Manage and rotate JWT secrets through deployment secrets, add token refresh and password-reset flows, and test durable revocation under deployment failure conditions.
+3. Configure `CLIENT_URL` to explicitly approved production origins; use HTTPS and production-safe deployment settings.
 4. Apply consistent authorization to detail and mutation handlers, and add automated negative tests for role and ownership boundaries.
 5. Scope notifications to their intended audience and implement read/unread state if required.
 6. Record security-relevant administrative actions in durable audit storage. Prevent removal/deactivation of the last active administrator.
-7. Add request validation, abuse controls such as login rate limiting, and operational logging/monitoring that avoids credentials and unnecessary personal data.
+7. Expand abuse controls beyond the current process-local login rate limiter, and add operational logging/monitoring that avoids credentials and unnecessary personal data.
 8. Complete a POPIA-oriented privacy review, retention/access policy, and security assessment before using personal data.
 
-Password reset, document uploads, persistent notification read-state, and external integrations are not implemented. SDF WSP/ATR records are in-app working records only and do not submit official forms or funding applications. Seed content and dashboard metrics must not be presented as live official information. External integrations require approved sources, credentials, consent where applicable, and documented safeguards.
+Password reset, persistent notification read-state, and external integrations are not implemented. Application documents are stored with application records and retrieved through protected API routes; protect database backups and configure retention before real documents are used. SDF WSP/ATR records are in-app working records only and do not submit official forms or funding applications. Seed content and dashboard metrics must not be presented as live official information. External integrations require approved sources, credentials, consent where applicable, and documented safeguards.
 
 The Farmer hub links to official information pages for ARC, AgriSETA, NAMC, and Land Bank. These are external referrals, not live feeds. Administrators may attach an HTTP(S) application-page URL to a sourced opportunity; the Farmer screen opens it separately from the optional MyAgriSETA tracking form. The tracking form does not submit information to an external organisation.
 
@@ -137,5 +137,6 @@ The Farmer hub links to official information pages for ARC, AgriSETA, NAMC, and 
 - [30-day project tracker](./PROJECT-TRACKER-30-DAYS.md)
 - [Security and privacy notes](./SECURITY.md)
 - [Architecture notes](./ARCHITECTURE.md)
+- [Visual architecture guide](./MYAGRISETA-VISUAL-ARCHITECTURE.pdf)
 - [Database notes](./DATABASE.md)
 - [Deployment guidance](./DEPLOYMENT.md)

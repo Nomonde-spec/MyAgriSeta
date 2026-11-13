@@ -157,12 +157,28 @@ test('only administrator-published opportunities are visible and application-rea
   const farmerDetail = await request(`/opportunities/${opportunity.id}`, { headers: auth(farmerToken) });
   assert.equal(farmerDetail.response.status, 404);
 
+  const saved = await request(`/opportunities/${opportunity.id}/saved`, {
+    method: 'POST',
+    headers: auth(learnerToken),
+  });
+  assert.equal(saved.response.status, 201);
+
   const application = await request('/applications', {
     method: 'POST',
     headers: auth(learnerToken),
     body: JSON.stringify({ opportunityId: opportunity.id, ...applicationForm() }),
   });
   assert.equal(application.response.status, 201);
+
+  const refreshedList = await request(`/opportunities?q=${encodeURIComponent(opportunity.title)}`, {
+    headers: auth(learnerToken),
+  });
+  assert.deepEqual(refreshedList.body.opportunities, []);
+  const refreshedSaved = await request('/opportunities/saved', { headers: auth(learnerToken) });
+  assert.equal(
+    refreshedSaved.body.opportunities.some((entry) => entry.id === opportunity.id),
+    false
+  );
 
   const duplicate = await request('/applications', {
     method: 'POST',
@@ -179,7 +195,22 @@ test('only administrator-published opportunities are visible and application-rea
   assert.equal(employerApplications.response.status, 403);
 
   const adminList = await request('/admin/opportunities?status=Published', { headers: auth(adminToken) });
-  assert.ok(adminList.body.opportunities.some((entry) => entry.id === opportunity.id));
+  const adminOpportunity = adminList.body.opportunities.find((entry) => entry.id === opportunity.id);
+  assert.ok(adminOpportunity);
+  assert.equal(adminOpportunity.applicationCount, 1);
+  const applicantList = await request(`/admin/opportunities/${opportunity.id}/applications`, {
+    headers: auth(adminToken),
+  });
+  assert.equal(applicantList.response.status, 200);
+  assert.equal(applicantList.body.applications.length, 1);
+  assert.equal(applicantList.body.applications[0].status, 'Submitted');
+  assert.equal(applicantList.body.applications[0].applicantName, 'Lerato Khumalo');
+  assert.equal('email' in applicantList.body.applications[0], false);
+  assert.equal('applicationData' in applicantList.body.applications[0], false);
+  const deniedApplicantList = await request(`/admin/opportunities/${opportunity.id}/applications`, {
+    headers: auth(learnerToken),
+  });
+  assert.equal(deniedApplicantList.response.status, 403);
 });
 
 test('employers can review only their own candidates and manage recruitment statuses', async () => {
@@ -187,6 +218,29 @@ test('employers can review only their own candidates and manage recruitment stat
   const adminToken = await login('admin', 'Admin123!');
   const learnerToken = await login('learner', 'Lerato123!');
   await approveAndPublish(opportunity.id, adminToken);
+  const passportSkill = await request('/passport/skills', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      name: `Recruitment passport skill ${Date.now()}`,
+      category: 'Crop production',
+      level: 'Practised',
+      description: 'Self-reported applicant skill.',
+    }),
+  });
+  assert.equal(passportSkill.response.status, 201);
+  const passportRecord = await request('/passport/records', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      recordType: 'qualification',
+      title: `Applicant qualification ${Date.now()}`,
+      organisation: 'Demonstration Provider',
+      level: 'NQF 4',
+      action: 'submit',
+    }),
+  });
+  assert.equal(passportRecord.response.status, 201);
 
   const submitted = await request('/applications', {
     method: 'POST',
@@ -203,6 +257,44 @@ test('employers can review only their own candidates and manage recruitment stat
   assert.equal(candidate.opportunityTitle, opportunity.title);
   assert.equal(candidate.applicantId, undefined);
   assert.equal(candidate.documents.some((document) => Object.hasOwn(document, 'data')), false);
+  const applicantPassport = await request(`/employer/applications/${candidate.id}/passport`, {
+    headers: auth(employerToken),
+  });
+  assert.equal(applicantPassport.response.status, 404);
+  const consent = await request('/me', {
+    method: 'PATCH',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      candidateVisible: true,
+      candidatePassportVisible: true,
+      candidateDesiredRole: 'Agricultural assistant',
+    }),
+  });
+  assert.equal(consent.response.status, 200);
+  const consentedPassport = await request(`/employer/applications/${candidate.id}/passport`, {
+    headers: auth(employerToken),
+  });
+  assert.equal(consentedPassport.response.status, 200);
+  assert.ok(consentedPassport.body.skills.some((skill) => skill.id === passportSkill.body.skill.id));
+  assert.equal(consentedPassport.body.skills[0].userId, undefined);
+  const sharedRecord = consentedPassport.body.records.find((entry) => entry.id === passportRecord.body.record.id);
+  assert.ok(sharedRecord);
+  assert.equal(sharedRecord.userId, undefined);
+  assert.equal(sharedRecord.documents, undefined);
+  const revokeConsent = await request('/me', {
+    method: 'PATCH',
+    headers: auth(learnerToken),
+    body: JSON.stringify({ candidateVisible: false, candidateDesiredRole: '' }),
+  });
+  assert.equal(revokeConsent.response.status, 200);
+  const revokedPassport = await request(`/employer/applications/${candidate.id}/passport`, {
+    headers: auth(employerToken),
+  });
+  assert.equal(revokedPassport.response.status, 404);
+  const deniedApplicantPassport = await request(`/employer/applications/${candidate.id}/passport`, {
+    headers: auth(learnerToken),
+  });
+  assert.equal(deniedApplicantPassport.response.status, 403);
   const employerNotifications = await request('/notifications', { headers: auth(employerToken) });
   assert.ok(employerNotifications.body.notifications.some((entry) =>
     entry.title === 'New opportunity application' && entry.message.includes(opportunity.title)
@@ -210,6 +302,13 @@ test('employers can review only their own candidates and manage recruitment stat
 
   const denied = await request('/employer/applications', { headers: auth(learnerToken) });
   assert.equal(denied.response.status, 403);
+
+  const adminFinalDecision = await request(`/admin/applications/${candidate.id}/status`, {
+    method: 'PATCH',
+    headers: auth(adminToken),
+    body: JSON.stringify({ status: 'Approved' }),
+  });
+  assert.equal(adminFinalDecision.response.status, 403);
 
   const shortlisted = await request(`/employer/applications/${candidate.id}/status`, {
     method: 'PATCH',
@@ -229,6 +328,49 @@ test('employers can review only their own candidates and manage recruitment stat
     entry.title === 'Recruitment application updated' && entry.message.includes('Shortlisted')
   ));
 
+  const unscheduledInterview = await request(`/employer/applications/${candidate.id}/status`, {
+    method: 'PATCH',
+    headers: auth(employerToken),
+    body: JSON.stringify({ status: 'Interview' }),
+  });
+  assert.equal(unscheduledInterview.response.status, 400);
+  const scheduledInterview = await request(`/employer/applications/${candidate.id}/status`, {
+    method: 'PATCH',
+    headers: auth(employerToken),
+    body: JSON.stringify({
+      status: 'Interview',
+      interviewAt: '2027-03-16T10:30',
+      feedback: 'Please attend at the farm office.',
+    }),
+  });
+  assert.equal(scheduledInterview.response.status, 200);
+  assert.equal(scheduledInterview.body.application.interviewAt, '2027-03-16T10:30');
+  const hiredWithoutStartDate = await request(`/employer/applications/${candidate.id}/status`, {
+    method: 'PATCH',
+    headers: auth(employerToken),
+    body: JSON.stringify({ status: 'Hired' }),
+  });
+  assert.equal(hiredWithoutStartDate.response.status, 400);
+  const hired = await request(`/employer/applications/${candidate.id}/status`, {
+    method: 'PATCH',
+    headers: auth(employerToken),
+    body: JSON.stringify({
+      status: 'Hired',
+      inductionDate: '2027-03-22',
+      employmentStartDate: '2027-03-29',
+    }),
+  });
+  assert.equal(hired.response.status, 200);
+  assert.equal(hired.body.application.status, 'Hired');
+  assert.equal(hired.body.application.inductionDate, '2027-03-22');
+  assert.equal(hired.body.application.employmentStartDate, '2027-03-29');
+  const scheduleNotifications = await request('/notifications', { headers: auth(learnerToken) });
+  assert.ok(scheduleNotifications.body.notifications.some((entry) =>
+    entry.message.includes('Interview: 2027-03-16 10:30') &&
+    entry.message.includes('Induction: 2027-03-22') &&
+    entry.message.includes('Start date: 2027-03-29')
+  ));
+
   const invalidTransition = await request(`/employer/applications/${candidate.id}/status`, {
     method: 'PATCH',
     headers: auth(employerToken),
@@ -241,6 +383,63 @@ test('employers can review only their own candidates and manage recruitment stat
     body: JSON.stringify({ status: 'Rejected' }),
   });
   assert.equal(deniedTransition.response.status, 403);
+  const removedSkill = await request(`/passport/skills/${passportSkill.body.skill.id}`, {
+    method: 'DELETE',
+    headers: auth(learnerToken),
+  });
+  assert.equal(removedSkill.response.status, 200);
+});
+
+test('administrator can recruit only candidates for administrator-posted jobs', async () => {
+  const adminToken = await login('admin', 'Admin123!');
+  const learnerToken = await login('learner', 'Lerato123!');
+  const title = `Administrator Posted Role ${Date.now()}`;
+  const created = await request('/admin/opportunities', {
+    method: 'POST',
+    headers: auth(adminToken),
+    body: JSON.stringify({
+      action: 'approve',
+      title,
+      description: `${title} agricultural vacancy.`,
+      category: 'Employment',
+      type: 'Employment',
+      role: 'learner',
+      organization: 'AgriSETA',
+      location: 'Free State',
+      closingDate: deadline(),
+      applicationInstructions: 'Apply through this MyAgriSETA listing.',
+    }),
+  });
+  assert.equal(created.response.status, 201, created.body.message);
+  const published = await request(`/admin/opportunities/${created.body.opportunity.id}`, {
+    method: 'PATCH',
+    headers: auth(adminToken),
+    body: JSON.stringify({ action: 'publish' }),
+  });
+  assert.equal(published.response.status, 200, published.body.message);
+
+  const submitted = await request('/applications', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({ opportunityId: created.body.opportunity.id, ...applicationForm() }),
+  });
+  assert.equal(submitted.response.status, 201, submitted.body.message);
+  const ownerCandidates = await request('/employer/applications', { headers: auth(adminToken) });
+  assert.ok(ownerCandidates.body.applications.some((entry) => entry.id === submitted.body.application.id));
+
+  const hired = await request(`/employer/applications/${submitted.body.application.id}/status`, {
+    method: 'PATCH',
+    headers: auth(adminToken),
+    body: JSON.stringify({ status: 'Hired', employmentStartDate: '2027-04-05' }),
+  });
+  assert.equal(hired.response.status, 200, hired.body.message);
+  assert.equal(hired.body.application.status, 'Hired');
+
+  const learnerApplications = await request('/applications', { headers: auth(learnerToken) });
+  assert.equal(
+    learnerApplications.body.applications.find((entry) => entry.id === submitted.body.application.id).status,
+    'Hired'
+  );
 });
 
 test('employers can search and invite only candidates who explicitly opt in', async () => {
@@ -320,7 +519,7 @@ test('employers can search and invite only candidates who explicitly opt in', as
   const optedOut = await request('/me', {
     method: 'PATCH',
     headers: auth(learnerToken),
-    body: JSON.stringify({ candidateVisible: false }),
+    body: JSON.stringify({ candidateVisible: false, candidateDesiredRole: '' }),
   });
   assert.equal(optedOut.response.status, 200);
   assert.equal(optedOut.body.user.candidateProfile.visible, false);
@@ -417,7 +616,7 @@ test('employers can retrieve applicant files only for applications to their own 
   assert.equal(unrelatedDocument.response.status, 404);
 });
 
-test('employers can submit employee training needs for provider discovery', async () => {
+test('employers can submit learner-facing training needs with a provider sponsor', async () => {
   const employerToken = await login('employer', 'Thandi123!');
   const providerToken = await login('provider', 'Naledi123!');
   const adminToken = await login('admin', 'Admin123!');
@@ -438,7 +637,7 @@ test('employers can submit employee training needs for provider discovery', asyn
       startDate: deadline(30),
       endDate: deadline(60),
       closingDate: deadline(),
-      applicationInstructions: 'Training providers may apply to express interest; the employer reviews responses.',
+      applicationInstructions: 'Learners can apply for the training; the employer coordinates with the sponsor.',
     }),
   });
   assert.equal(trainingNeed.response.status, 201, trainingNeed.body.message);
@@ -450,13 +649,87 @@ test('employers can submit employee training needs for provider discovery', asyn
   const providerListings = await request('/opportunities?category=Training%20Need', {
     headers: auth(providerToken),
   });
-  assert.ok(providerListings.body.opportunities.some((entry) => entry.id === trainingNeed.body.opportunity.id));
+  assert.equal(providerListings.body.opportunities.some((entry) => entry.id === trainingNeed.body.opportunity.id), false);
 
   const learnerToken = await login('learner', 'Lerato123!');
   const learnerListings = await request('/opportunities?category=Training%20Need', {
     headers: auth(learnerToken),
   });
-  assert.equal(learnerListings.body.opportunities.some((entry) => entry.id === trainingNeed.body.opportunity.id), false);
+  const learnerListing = learnerListings.body.opportunities.find((entry) =>
+    entry.id === trainingNeed.body.opportunity.id
+  );
+  assert.ok(learnerListing);
+  assert.equal(learnerListing.role, 'learner');
+  const learnerDetail = await request(`/opportunities/${trainingNeed.body.opportunity.id}`, {
+    headers: auth(learnerToken),
+  });
+  assert.equal(learnerDetail.response.status, 200);
+
+  const learnerApplication = await request('/applications', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      opportunityId: trainingNeed.body.opportunity.id,
+      ...applicationForm(),
+    }),
+  });
+  assert.equal(learnerApplication.response.status, 201, learnerApplication.body.message);
+
+  const hiddenAfterApplying = await request('/opportunities?category=Training%20Need', {
+    headers: auth(learnerToken),
+  });
+  assert.equal(
+    hiddenAfterApplying.body.opportunities.some((entry) => entry.id === trainingNeed.body.opportunity.id),
+    false
+  );
+
+  const providerApply = await request('/applications', {
+    method: 'POST',
+    headers: auth(providerToken),
+    body: JSON.stringify({
+      opportunityId: trainingNeed.body.opportunity.id,
+      ...applicationForm({ fullName: 'Naledi Provider', email: 'provider@myagriseta.local' }),
+    }),
+  });
+  assert.equal(providerApply.response.status, 403);
+});
+
+test('learner-facing training need submissions retain provider sponsors', async () => {
+  const employerToken = await login('employer', 'Thandi123!');
+  const learnerToken = await login('learner', 'Lerato123!');
+  const adminToken = await login('admin', 'Admin123!');
+  const title = `Learner Training Opportunity ${Date.now()}`;
+  const submission = await request('/employer/opportunities', {
+    method: 'POST',
+    headers: auth(employerToken),
+    body: JSON.stringify({
+      action: 'submit',
+      title,
+      description: 'Practical agricultural skills training for eligible learners.',
+      category: 'Training Need',
+      role: 'training_provider',
+      location: 'Limpopo',
+      trainingObjectives: 'Build practical irrigation and water-management skills.',
+      requiredSkills: ['Irrigation basics'],
+      participantCount: 12,
+      startDate: deadline(30),
+      endDate: deadline(60),
+      closingDate: deadline(),
+      applicationInstructions: 'Apply through the learner portal.',
+    }),
+  });
+  assert.equal(submission.response.status, 201, submission.body.message);
+  assert.equal(submission.body.opportunity.role, 'training_provider');
+
+  await approveAndPublish(submission.body.opportunity.id, adminToken);
+  const learnerListings = await request('/opportunities?category=Training%20Need', {
+    headers: auth(learnerToken),
+  });
+  const learnerListing = learnerListings.body.opportunities.find((entry) =>
+    entry.id === submission.body.opportunity.id
+  );
+  assert.ok(learnerListing);
+  assert.equal(learnerListing.role, 'learner');
 });
 
 test('farmers can discover support and request a mentor introduction with in-app staff feedback', async () => {
@@ -624,6 +897,101 @@ test('administrator bursary, learnership, and training content requires a checke
   assert.equal(sourced.body.opportunity.dataStatus.includes('Confirm the source'), true);
 });
 
+test('administrator opportunity forms persist category details and validate custom applicant fields', async () => {
+  const adminToken = await login('admin', 'Admin123!');
+  const learnerToken = await login('learner', 'Lerato123!');
+  const today = new Date().toISOString().slice(0, 10);
+  const closingDate = deadline(60);
+  const result = await request('/admin/opportunities', {
+    method: 'POST',
+    headers: auth(adminToken),
+    body: JSON.stringify({
+      title: 'Agricultural studies bursary form test',
+      description: 'A bursary listing used to test the expanded opportunity form.',
+      category: 'Bursary',
+      type: 'Bursary',
+      role: 'learner',
+      organization: 'Example funder',
+      location: 'Western Cape',
+      closingDate,
+      applicationInstructions: 'Apply online and provide your current academic details.',
+      sourceName: 'Example official source',
+      sourceUrl: 'https://example.org/bursary',
+      sourceVerifiedAt: today,
+      recordExpiresAt: deadline(90),
+      opportunityDetails: {
+        programmeName: 'Agricultural Studies Bursary',
+        academicYear: '2027',
+        qualificationLevel: 'Diploma',
+        fieldOfStudy: 'Agricultural Management',
+        bursaryValue: '25000',
+      },
+      eligibilityCriteria: { provinces: 'Western Cape', minimumQualification: 'Matric' },
+      applicationConfiguration: {
+        openingDate: today,
+        maximumApplications: '15',
+        termsAndConditions: 'Information is subject to verification.',
+        requiredInformation: ['Academic information', 'Relevant skills'],
+        assignReviewDepartment: 'Bursary Review',
+        reviewInstructions: 'Check the academic record.',
+        allowSaveAsDraft: true,
+        allowEditsBeforeClosing: true,
+        allowAfterClosing: false,
+        allowWithdrawal: true,
+        enableReferenceNumbers: true,
+        enableStatusTracking: true,
+      },
+      applicationQuestions: [{
+        title: 'Are you currently enrolled?',
+        type: 'Dropdown',
+        required: true,
+        description: '',
+        options: ['Yes', 'No'],
+      }],
+    }),
+  });
+  assert.equal(result.response.status, 201, result.body.message);
+  const opportunity = result.body.opportunity;
+  assert.equal(opportunity.status, 'Approved');
+  assert.equal(opportunity.opportunityDetails.programmeName, 'Agricultural Studies Bursary');
+  assert.equal(opportunity.applicationQuestions.length, 1);
+  const published = await request(`/admin/opportunities/${opportunity.id}`, {
+    method: 'PATCH',
+    headers: auth(adminToken),
+    body: JSON.stringify({ action: 'publish' }),
+  });
+  assert.equal(published.response.status, 200, published.body.message);
+  const publicDetail = await request(`/opportunities/${opportunity.id}`, { headers: auth(learnerToken) });
+  assert.equal(publicDetail.response.status, 200);
+  assert.equal(publicDetail.body.opportunity.opportunityDetails.programmeName, 'Agricultural Studies Bursary');
+  assert.equal('assignReviewDepartment' in publicDetail.body.opportunity, false);
+
+  const missingAnswers = await request('/applications', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({ opportunityId: opportunity.id, ...applicationForm() }),
+  });
+  assert.equal(missingAnswers.response.status, 400);
+  const validApplicationData = {
+    ...applicationForm().applicationData,
+    answers: ['Yes'],
+    additionalInformation: {
+      'Academic information': 'Currently enrolled in a Diploma in Agriculture.',
+      'Relevant skills': 'Crop production and record keeping.',
+    },
+  };
+  const application = await request('/applications', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      opportunityId: opportunity.id,
+      applicationData: validApplicationData,
+      documents: [],
+    }),
+  });
+  assert.equal(application.response.status, 201, application.body.message);
+});
+
 test('administrator opportunity application URLs must use safe HTTP(S) links', async () => {
   const adminToken = await login('admin', 'Admin123!');
   const invalid = await request('/admin/opportunities', {
@@ -641,6 +1009,51 @@ test('administrator opportunity application URLs must use safe HTTP(S) links', a
   });
   assert.equal(invalid.response.status, 400);
   assert.match(invalid.body.message, /application URL must use HTTP or HTTPS/i);
+});
+
+test('upcoming opportunities are visible but applications cannot open early', async () => {
+  const adminToken = await login('admin', 'Admin123!');
+  const learnerToken = await login('learner', 'Lerato123!');
+  const created = await request('/admin/opportunities', {
+    method: 'POST',
+    headers: auth(adminToken),
+    body: JSON.stringify({
+      title: 'Upcoming agricultural internship',
+      description: 'An internship with a future application opening date.',
+      category: 'Internship',
+      role: 'learner',
+      organization: 'Example employer',
+      location: 'Free State',
+      closingDate: deadline(60),
+      applicationInstructions: 'Apply online when applications open.',
+      opportunityDetails: {
+        programmeName: 'Farm internship',
+        agriculturalField: 'Crop production',
+        positions: '2',
+        duration: '12 months',
+      },
+      applicationConfiguration: { openingDate: deadline(2), maximumApplications: '1' },
+    }),
+  });
+  assert.equal(created.response.status, 201, created.body.message);
+  const published = await request(`/admin/opportunities/${created.body.opportunity.id}`, {
+    method: 'PATCH',
+    headers: auth(adminToken),
+    body: JSON.stringify({ action: 'publish' }),
+  });
+  assert.equal(published.response.status, 200, published.body.message);
+  const detail = await request(`/opportunities/${created.body.opportunity.id}`, { headers: auth(learnerToken) });
+  assert.equal(detail.response.status, 200);
+  assert.equal(detail.body.opportunity.status, 'Upcoming');
+  const application = await request('/applications', {
+    method: 'POST',
+    headers: auth(learnerToken),
+    body: JSON.stringify({
+      opportunityId: created.body.opportunity.id,
+      ...applicationForm(),
+    }),
+  });
+  assert.equal(application.response.status, 409);
 });
 
 test('learners can discover clearly labeled sample funding, learnership, internship, and job listings', async () => {
@@ -827,6 +1240,63 @@ test('training providers submit opportunities for admin approval and applicants 
   });
   assert.equal(invalidCategory.response.status, 400);
 
+  const incompleteFunding = await request('/provider/opportunities', {
+    method: 'POST',
+    headers: auth(providerToken),
+    body: JSON.stringify({
+      action: 'submit',
+      title: `Incomplete Training Funding ${Date.now()}`,
+      description: 'Funding opportunity for agricultural training.',
+      category: 'Funding',
+      role: 'learner',
+      location: 'Eastern Cape',
+      trainingObjectives: 'Support agricultural training.',
+      accreditation: 'Provider evidence supplied.',
+      duration: 'Six weeks',
+      deliveryMethod: 'Hybrid',
+      startDate: deadline(30),
+      endDate: deadline(60),
+      capacity: 24,
+      qualifications: 'Eligible learners.',
+      requirements: ['Agricultural training interest.'],
+      closingDate: deadline(),
+      applicationInstructions: 'Apply through this platform.',
+    }),
+  });
+  assert.equal(incompleteFunding.response.status, 400);
+
+  const trainingFunding = await request('/provider/opportunities', {
+    method: 'POST',
+    headers: auth(providerToken),
+    body: JSON.stringify({
+      action: 'submit',
+      title: `Agricultural Training Funding ${Date.now()}`,
+      description: 'Funding to support agricultural skills development.',
+      category: 'Funding',
+      role: 'learner',
+      location: 'Eastern Cape',
+      trainingObjectives: 'Fund practical agricultural soil-management skills training.',
+      accreditation: 'Provider evidence supplied.',
+      duration: 'Six weeks',
+      deliveryMethod: 'Hybrid',
+      startDate: deadline(30),
+      endDate: deadline(60),
+      capacity: 24,
+      qualifications: 'Eligible learners.',
+      requirements: ['Agricultural training interest.'],
+      closingDate: deadline(),
+      applicationInstructions: 'Apply through this platform.',
+      opportunityDetails: {
+        programmeName: 'Soil Skills Training Fund',
+        fundingType: 'Training grant',
+        fundingPurpose: 'Support practical agricultural training.',
+        projectObjectives: 'Develop soil-management skills.',
+      },
+    }),
+  });
+  assert.equal(trainingFunding.response.status, 201, trainingFunding.body.message);
+  assert.equal(trainingFunding.body.opportunity.category, 'Funding');
+
   const hidden = await request(`/opportunities?q=${encodeURIComponent(title)}`, { headers: auth(learnerToken) });
   assert.deepEqual(hidden.body.opportunities, []);
   const reviewQueue = await request('/admin/opportunities?status=Pending%20Approval', { headers: auth(adminToken) });
@@ -864,6 +1334,7 @@ test('training providers submit opportunities for admin approval and applicants 
   assert.deepEqual(resubmitted.body.opportunity.supportingDocuments, []);
 
   await approveAndPublish(submitted.body.opportunity.id, adminToken);
+
   const users = await request('/users', { headers: auth(adminToken) });
   const providerAccount = users.body.users.find((entry) => entry.email === 'provider@myagriseta.local');
   const deactivated = await request(`/users/${providerAccount.id}/status`, {
@@ -924,6 +1395,10 @@ test('training providers submit opportunities for admin approval and applicants 
   assert.equal(statusNotice.canMarkRead, true);
   assert.equal(statusNotice.targetType, 'application');
   assert.equal(statusNotice.targetId, application.body.application.id);
+  assert.equal(statusNotice.emailDeliveryStatus, 'disabled');
+  assert.equal(statusNotice.emailDeliveryRecipient, 'learner@myagriseta.local');
+  assert.match(statusNotice.message, /Additional documents or information requested:/);
+  assert.match(statusNotice.message, /Please provide your latest training record\./);
   const finalReview = await request(`/admin/applications/${application.body.application.id}/status`, {
     method: 'PATCH',
     headers: auth(adminToken),
@@ -937,18 +1412,23 @@ test('training providers submit opportunities for admin approval and applicants 
   assert.ok(approvalNotice);
   assert.equal(approvalNotice.targetType, 'application');
   assert.equal(approvalNotice.targetId, application.body.application.id);
-  const unauthenticatedResend = await request('/notifications/resend-application-status', { method: 'POST' });
+  const unauthenticatedResend = await request('/notifications/resend-email', { method: 'POST' });
   assert.equal(unauthenticatedResend.response.status, 401);
-  const otherAccountResend = await request('/notifications/resend-application-status', {
+  const otherAccountResend = await request('/notifications/resend-email', {
     method: 'POST',
     headers: auth(farmerToken),
   });
   assert.equal(otherAccountResend.response.status, 503);
-  const disabledEmailResend = await request('/notifications/resend-application-status', {
+  const disabledEmailResend = await request('/notifications/resend-email', {
     method: 'POST',
     headers: auth(learnerToken),
   });
   assert.equal(disabledEmailResend.response.status, 503);
+  const legacyResend = await request('/notifications/resend-application-status', {
+    method: 'POST',
+    headers: auth(learnerToken),
+  });
+  assert.equal(legacyResend.response.status, 503);
   const markedRead = await request(`/notifications/${statusNotice.id}/read`, {
     method: 'PATCH',
     headers: auth(learnerToken),
@@ -957,6 +1437,14 @@ test('training providers submit opportunities for admin approval and applicants 
 
   const otherApplicantApplications = await request('/applications', { headers: auth(farmerToken) });
   assert.equal(otherApplicantApplications.body.applications.some((entry) => entry.id === application.body.application.id), false);
+
+  const archived = await request(`/provider/opportunities/${submitted.body.opportunity.id}`, {
+    method: 'PATCH',
+    headers: auth(providerToken),
+    body: JSON.stringify({ action: 'withdraw' }),
+  });
+  assert.equal(archived.response.status, 200);
+  assert.equal(archived.body.opportunity.status, 'Archived');
 });
 
 test('SDF opportunity submissions require administrator approval and preserve role eligibility', async () => {

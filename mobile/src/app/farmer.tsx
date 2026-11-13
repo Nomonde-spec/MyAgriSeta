@@ -22,11 +22,6 @@ const officialSources = [
     url: 'https://www.arc.agric.za/Pages/Programmes/Crop-Sciences.aspx',
   },
   {
-    title: 'AgriSETA learner information',
-    detail: 'Agriculture-sector skills and training information.',
-    url: 'https://www.agriseta.co.za/job-seekers/',
-  },
-  {
     title: 'NAMC smallholder market access',
     detail: 'Market-access support information; not current commodity prices.',
     url: 'https://www.namc.co.za/markets-and-economic-insights/promoting-market-access/',
@@ -107,40 +102,43 @@ export default function FarmerHubScreen() {
             onPress={() => router.push({ pathname: '/learning', params: { section: 'Resources' } })}
           />
           <FarmerAction
-            icon="school-outline"
-            title="Farming training"
-            description="Browse the agricultural course catalogue."
-            onPress={() => router.push({ pathname: '/learning', params: { section: 'Courses' } })}
+            icon="sparkles-outline"
+            title="AgriAdvisor AI"
+            description="Not available yet: an approved AI provider and agricultural safeguards are not configured."
+            onPress={() => Alert.alert(
+              'AgriAdvisor AI is not available',
+              'An approved AI provider and agricultural safety safeguards have not been configured. Use the source-labelled farming resources instead.'
+            )}
           />
           <FarmerAction
-            icon="calendar-outline"
-            title="Training opportunities"
-            description="View published training offers with source and expiry details."
-            onPress={() => router.push({ pathname: '/opportunities', params: { category: 'Training' } })}
+            icon="trending-up-outline"
+            title="Markets and prices"
+            description="View current market information with its source, check date, and expiry."
+            onPress={() => router.push('/farmer-market')}
           />
           <FarmerAction
             icon="wallet-outline"
             title="Funding opportunities"
-            description="Search farmer-eligible listings and submit an in-app application."
-            onPress={() => router.push({ pathname: '/opportunities', params: { category: 'Funding' } })}
+            description="Review official AgriSETA grant information and find other eligible listings."
+            onPress={() => router.push('/farmer-funding')}
           />
           <FarmerAction
             icon="business-outline"
-            title="Farm business support"
+            title="AgriSMME business support"
             description="Explore support listings for planning and managing an agricultural operation."
             onPress={() => router.push({ pathname: '/opportunities', params: { category: 'Business Support' } })}
           />
           <FarmerAction
             icon="people-circle-outline"
-            title="Request a mentor introduction"
-            description="Browse source-checked mentor profiles and request a consent-based introduction."
+            title="AgriMentor and my requests"
+            description="Browse verified mentor profiles, request an introduction, and track its status."
             onPress={() => router.push('/farmer-mentors')}
           />
           <FarmerAction
-            icon="person-outline"
-            title="Farm profile"
-            description="Update your farm or operation name, province, and contact details."
-            onPress={() => router.push('/profile')}
+            icon="notifications-outline"
+            title="Farming announcements"
+            description="Review in-app announcements and updates about your applications."
+            onPress={() => router.push('/notifications')}
           />
         </View>
 

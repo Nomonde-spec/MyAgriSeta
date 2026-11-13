@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
 const {
+  assertRecipientAccepted,
   getBrevoConfiguration,
   getBrevoDeliveryErrorMessage,
+  maskEmailAddress,
 } = require('../src/email-notifications');
 
 const brevoVariables = [
@@ -58,6 +60,10 @@ test('enabled Brevo email validates required SMTP settings without exposing secr
 
 test('Brevo SMTP failures expose actionable messages without leaking provider responses', () => {
   assert.match(
+    getBrevoDeliveryErrorMessage({ code: 'ERECIPIENT' }),
+    /did not accept the recipient address/
+  );
+  assert.match(
     getBrevoDeliveryErrorMessage({ code: 'EAUTH', responseCode: 525 }),
     /Authorize the backend public IP/
   );
@@ -69,4 +75,30 @@ test('Brevo SMTP failures expose actionable messages without leaking provider re
     getBrevoDeliveryErrorMessage({ code: 'ETIMEDOUT' }),
     /could not connect/
   );
+});
+
+test('Brevo delivery is successful only when SMTP explicitly accepts the recipient', () => {
+  assert.deepEqual(
+    assertRecipientAccepted({
+      accepted: ['learner@example.test'],
+      messageId: '<message-123@example.test>',
+    }, 'Learner@example.test'),
+    { status: 'sent', messageId: '<message-123@example.test>' }
+  );
+  assert.throws(
+    () => assertRecipientAccepted({
+      accepted: [],
+      rejected: ['learner@example.test'],
+    }, 'learner@example.test'),
+    { code: 'ERECIPIENT' }
+  );
+  assert.throws(
+    () => assertRecipientAccepted({}, 'learner@example.test'),
+    { code: 'ERECIPIENT' }
+  );
+});
+
+test('email addresses are masked before showing the delivery destination', () => {
+  assert.equal(maskEmailAddress('learner@example.test'), 'l***@example.test');
+  assert.equal(maskEmailAddress('invalid-address'), '');
 });

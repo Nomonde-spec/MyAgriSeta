@@ -1,16 +1,16 @@
 # MyAgriSETA / AgriConnect 360 — Role-by-Role Presentation Script
 
-Use this script while presenting the application page by page. It follows the demonstrated flow: **Landing page → Login → that role's Home dashboard → that role's tabs → Profile**. The Administrator has an extra **Admin** tab; the other roles do not.
+Use this script as a practical walk-through of the current mobile-first application. The persistent bottom navigation has four tabs for every signed-in role: **Home → Services → Passport → Profile**. Opportunities, applications, notifications, administration, review, Farmer Hub, and AgriLearn open from Home quick actions, the notification bell, or a service card; SDF workforce planning opens from the SDF Opportunities workspace. These are not bottom tabs.
 
 Present one role at a time. Log out before starting the next role and sign in with that role's separate demo account. Never describe role selection or switching as a regular user's ability.
 
 ## Opening statement
 
-> “MyAgriSETA, also called AgriConnect 360, is a role-aware platform concept for connecting South African agricultural stakeholders with relevant services, opportunities, learning information, and account support. In this demonstration, I will sign in as different users to show how the dashboard and permitted actions change according to each account's assigned role.”
+> “MyAgriSETA, also called AgriConnect 360, is a role-aware agricultural services prototype. It gives learners, farmers, employers, skills development facilitators, training providers, and administrators one place to find relevant information and use account-based workflows. I will demonstrate how the experience changes according to the signed-in account.”
 
 Then set expectations:
 
-> “This is a working prototype connected to a development API. Some listings are synthetic demonstration records, not official AgriSETA programmes. Demo course enrolments, module assessments, and started-guide records are for prototype tracking; they do not reserve a real course place or contact an external organisation. The app labels unverified content and does not claim accredited delivery, official assessment results, or certificates.”
+> “This is a development prototype connected to an API and Neon database. Some listings are synthetic demonstration records, not official AgriSETA programmes. In-app applications and demo learning progress do not submit applications externally, reserve a real course place, establish accreditation, or create official assessment results or certificates. The app labels prototype and unverified content.”
 
 Demo account names, usernames, and passwords are listed in [SETUP.md](./SETUP.md). Use them only in an isolated local development environment.
 
@@ -18,7 +18,7 @@ Demo account names, usernames, and passwords are listed in [SETUP.md](./SETUP.md
 
 ### Landing page
 
-**Page:** Landing (`/`)  
+**Page:** Landing (`/`)
 **Signed-in user:** None.
 
 Say:
@@ -27,7 +27,7 @@ Say:
 
 ### Login page
 
-**Page:** Login (`/login`)  
+**Page:** Login (`/login`)
 **Signed-in user:** None yet.
 
 Say:
@@ -38,16 +38,15 @@ Enter the selected demo account, then say:
 
 > “The server authenticates this account and returns its assigned role. I am now presenting the application from that user's point of view.”
 
-### Administrator account-management demonstration
-
-Open the Administration screen and explain that authorized administrators can provision accounts, assign one or more roles, choose an active role, update account details or passwords, and activate or deactivate accounts. Permissions are derived from the assigned role and enforced by the API. Password changes invalidate existing sessions. The app does not independently verify identity or role claims against official registries.
+**Presenter note:** Save account provisioning and role-management screens for the Administrator segment. An administrator may assign roles and an active role to an account; users cannot switch into an unassigned role themselves.
 
 ## 1. Learner dashboard
 
-**Demo account:** `learner`  
-**Signed-in user:** Lerato Khumalo  
-**Role:** Learner  
-**Tabs, in order:** Home → Services → Opportunities → Alerts → Profile
+**Demo account:** `learner`
+**Signed-in user:** Lerato Khumalo
+**Role:** Learner
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Find learning, My passport, Applications, Explore opportunities. Notifications open from the bell.
 
 ### Home — Learner dashboard
 
@@ -55,17 +54,23 @@ Say:
 
 > “This is Lerato's Learner dashboard. It welcomes her by name and summarizes her learner journey. The quick actions focus on finding learning information, viewing skills-passport information, checking her applications, and exploring opportunities. The dashboard data is associated with this signed-in account.”
 
-Select **Find learning** to open the AgriLearn service details. Then select **Explore AgriLearn** if you want to show the learning portal.
+Select **Find learning** to open the learning-programmes service. Use **Explore opportunities** to open the opportunity list and **Applications** to review this account's own applications.
 
 ### Services — Learner service directory
 
 Say:
 
-> “Services is the searchable directory. The learner can find services relevant to the learner role, review each service's description and access information, and see whether the information is a prototype or connected feature.”
+> “Services is a searchable directory with category filters for Learning, Funding, and Work. Each card opens the relevant listing, feature, or information page. Its status note explains the current limits—for example, sample job entries are not real vacancies, the Skills Passport is self-reported, and no grant application service is connected.”
 
-Open **AgriLearn** and say:
+Explain that each service card is an entry point, not proof of an external integration:
 
-> “AgriLearn provides a searchable demonstration course catalogue, provider directory, in-app learning guides, saved courses, demo enrolments, prototype modules and knowledge checks, and an account-linked learning list. Course and provider listings are not verified official records.”
+- **Learning Programmes** opens AgriLearn: searchable course and provider listings, in-app guides, saved courses, demo enrolments, prototype modules, and knowledge checks. Listings and providers are not independently verified.
+- **Bursaries & Funding**, **Grant Applications**, **Workplace Experience**, and **AgriJobs** open opportunity lists. Sample entries are not real offers; the app's application tracker does not send an application to an external organisation.
+- **Provider Directory** opens provider listings in AgriLearn. These are demo records unless independently verified.
+- **Career Pathways** provides prototype career and mentoring information; mentor matching is not connected through this card.
+- **Skills Passport** opens the user's self-reported skills and credential records. There is no trusted issuer or public credential-verification service.
+- **Employer Services** and **Skills Planning** provide workforce-development information. External employer systems and official WSP/ATR submission are not connected.
+- **Support Centre** provides account guidance, but no support contact channel is connected.
 
 ### Opportunities — Learner opportunities
 
@@ -77,17 +82,19 @@ Open a card and point out the status, target audience, eligibility, requirements
 
 > “The application tracker creates a reference and shows the prototype status, but it does not submit the application to an external programme.”
 
-### Alerts — Learner notifications
+If the learner has already applied to an opportunity, explain that an active application is hidden from that learner's opportunity browse list. The application remains available from **Applications**.
+
+### Notifications — Learner account
 
 Say:
 
-> “Alerts shows the in-app notifications available to Lerato's account, including their read or unread state. An empty list means no notification records are currently available. Email, SMS, and push delivery are not being demonstrated as live integrations.”
+> “The notification bell opens the in-app notifications for Lerato's account, with read/unread state. If transactional email is enabled and configured on the backend, account notifications and application-status updates are also sent to the account's registered email. The app can show a delivery attempt and the destination, but SMTP acceptance does not prove that a message reached the inbox. SMS and push delivery are not configured.”
 
 ### Profile — Learner account
 
 Say:
 
-> “Profile confirms the signed-in user's name, contact identity, current role, and assigned roles. The learner can log out here, but cannot grant themselves another role.”
+> “Profile confirms the signed-in user's account and assigned role. Learners can manage permitted profile fields and their optional employer-search visibility, and can log out here. They cannot grant themselves another role.”
 
 ### Optional AgriLearn walkthrough — Learner
 
@@ -103,12 +110,19 @@ Say:
 
 > “A demonstration enrolment is not a real course place. The original prototype lessons and knowledge checks track practice progress only; they are not accredited delivery or a formal assessment and do not create a certificate. A request for a published course still needs provider confirmation.”
 
+### Passport — learner skills passport
+
+Say:
+
+> “The Passport tab shows the learner's account-linked credentials and self-reported skills. A user can add or manage their own skill entries and share or download a summary. These are not verified credentials; no trusted issuer or public credential-verification service is connected.”
+
 ## 2. Farmer dashboard
 
-**Demo account:** `farmer`  
-**Signed-in user:** Sipho Ndlovu  
-**Role:** Farmer  
-**Tabs, in order:** Home → Services → Opportunities → Alerts → Profile
+**Demo account:** `farmer`
+**Signed-in user:** Sipho Ndlovu
+**Role:** Farmer
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Farm hub, Find training, Funding & support, Mentor interest. Notifications open from the bell.
 
 ### Home — Farmer dashboard
 
@@ -130,13 +144,13 @@ If opening **Farm Business Planning**, say:
 
 Say:
 
-> “The Farmer can filter opportunities for the farming audience, open details, save relevant records, and track their own application. Eligibility and deadlines should only be treated as official when backed by a verified source.”
+> “The Farmer can open the Farmer Hub for agricultural guides, market information, and mentor requests, and use opportunities to find eligible funding, training, business-support, and mentorship listings. Source details and expiry are shown for curated information; source attribution does not itself guarantee that an offer is official. In-app applications do not submit to the external provider.”
 
-### Alerts — Farmer notifications
+### Notifications — Farmer account
 
 Say:
 
-> “This page displays the in-app notification records for Sipho's account. It is not a live SMS or email inbox.”
+> “The notification bell opens Sipho's in-app notices. If configured, transactional email is sent to the account's registered email; the app's SMTP status does not guarantee inbox delivery. SMS and push are not connected.”
 
 ### Profile — Farmer account
 
@@ -146,10 +160,11 @@ Say:
 
 ## 3. Employer dashboard
 
-**Demo account:** `employer`  
-**Signed-in user:** Thandi Mahlangu  
-**Role:** Employer  
-**Tabs, in order:** Home → Services → Opportunities → Alerts → Profile
+**Demo account:** `employer`
+**Signed-in user:** Thandi Mahlangu
+**Role:** Employer
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Employer-specific opportunities, candidate discovery, and recruitment tools. Notifications open from the bell.
 
 ### Home — Employer dashboard
 
@@ -167,13 +182,13 @@ Say:
 
 Say:
 
-> “The Employer can find and filter relevant opportunities, inspect the requirements, and save or apply to records that are open to this role. A prototype application is tracked here only; it is not delivered to an external organisation.”
+> “The Employer can submit job, internship, workplace-experience, and learner-facing training-need listings for administrator review. Training providers or SDFs may be the sponsor or delivery partner for a Training Need; learners are the intended participants. Employers can also search limited candidate profiles only when a learner or farmer has opted in, send an in-app invitation, and review applications to their own listings. Candidate contact details stay private until the person applies. The workflow does not send listings to an external job board.”
 
-### Alerts — Employer notifications
+### Notifications — Employer account
 
 Say:
 
-> “Alerts displays the in-app notifications returned for Thandi's account. External email, SMS, or push notifications are not implied.”
+> “The notification bell shows Thandi's account notices. Application and workflow emails may be sent when backend SMTP is configured; the in-app status only reports SMTP acceptance, not confirmed inbox delivery. SMS and push are not configured.”
 
 ### Profile — Employer account
 
@@ -183,16 +198,17 @@ Say:
 
 ## 4. Skills Development Facilitator dashboard
 
-**Demo account:** `sdf`  
-**Signed-in user:** Mpho Ramokgopa  
-**Role:** Skills Development Facilitator (SDF)  
-**Tabs, in order:** Home → Services → Opportunities → Alerts → Profile
+**Demo account:** `sdf`
+**Signed-in user:** Mpho Ramokgopa
+**Role:** Skills Development Facilitator (SDF)
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Skills Passport, Learning services, Training providers, Opportunities, and My applications. Open the **Opportunities** workspace, then choose **Open SDF planning workspace** for WSP/ATR and workforce records. Notifications open from the bell.
 
 ### Home — SDF dashboard
 
 Say:
 
-> “This is Mpho's Skills Development Facilitator dashboard. It highlights skills-development services, learning and provider information, and opportunities relevant to the SDF role.”
+> “This is Mpho's Skills Development Facilitator dashboard. It highlights role-eligible services, opportunities, and the organisation's workforce-planning workflow.”
 
 ### Services — SDF service directory
 
@@ -212,11 +228,11 @@ Say:
 
 > “The SDF records employee-group skills gaps, builds WSP activity drafts, reports planned versus actual training in ATR records, and tracks training cohorts through delivery. The records are scoped to the verified organisation and avoid collecting employee names. Shared WSP/ATR summaries are working documents, not official submissions to AgriSETA.”
 
-### Alerts — SDF notifications
+### Notifications — SDF account
 
 Say:
 
-> “This is the SDF account's in-app notification list. The screen does not mean that an external notification provider is connected.”
+> “The notification bell opens account-scoped in-app notices. Email depends on the configured SMTP service; SMTP acceptance is not proof of inbox delivery. SMS and push are not connected.”
 
 ### Profile — SDF account
 
@@ -226,10 +242,11 @@ Say:
 
 ## 5. Training Provider dashboard
 
-**Demo account:** `provider`  
-**Signed-in user:** Naledi Maseko  
-**Role:** Training Provider  
-**Tabs, in order:** Home → Services → Opportunities → Alerts → Profile
+**Demo account:** `provider`
+**Signed-in user:** Naledi Maseko
+**Role:** Training Provider
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Provider-specific services, learning tools, and own submissions. Notifications open from the bell.
 
 ### Home — Training Provider dashboard
 
@@ -241,19 +258,19 @@ Say:
 
 Say:
 
-> “The provider can browse the role-eligible services and enter AgriLearn. Provider-specific management is available only when the authenticated account has the provider role; the role is not selected in a dashboard switcher.”
+> “The provider can browse services and open Learning Programmes to reach AgriLearn. Provider-specific management is available only to an account assigned the provider role; users cannot switch into an unassigned role.”
 
 ### Opportunities — Training Provider opportunities
 
 Say:
 
-> “The provider can explore and filter opportunities relevant to the account. Any submission or application shown is associated with this account and its permitted actions.”
+> “The provider can submit learning programmes and learner-facing training opportunities for administrator review, manage their own submissions, and respond to enrolment requests on their own courses. A provider can sponsor or deliver learner training; the Training Need audience should be the learners who need that training. Publication does not prove accreditation or official status.”
 
-### Alerts — Training Provider notifications
+### Notifications — Training Provider account
 
 Say:
 
-> “Alerts shows the in-app notifications available to Naledi. It does not claim that external notification delivery is configured.”
+> “The notification bell shows Naledi's in-app notices. Transactional email is conditional on backend SMTP configuration; SMTP acceptance is not confirmed inbox delivery. SMS and push are not configured.”
 
 ### Profile — Training Provider account
 
@@ -263,7 +280,7 @@ Say:
 
 ### Optional AgriLearn walkthrough — Provider tools
 
-Open **AgriLearn → Provider tools** and say:
+Open **Services → Learning Programmes → AgriLearn → Provider tools** and say:
 
 > “The provider can submit programme listings with entry requirements and an eligible audience, and request changes to its provider profile. Listings and profile changes require administrator review. Submission does not establish accreditation or course availability.”
 
@@ -273,14 +290,15 @@ If listing records exist, show the provider's own submissions and course enrolme
 
 ## 6. Administrator dashboard
 
-**Demo account:** `admin`  
-**Signed-in user:** Nandi Mokoena  
-**Role:** Administrator  
-**Tabs, in order:** Home → Admin → Services → Opportunities → Alerts → Profile
+**Demo account:** `admin`
+**Signed-in user:** Nandi Mokoena
+**Role:** Administrator
+**Bottom tabs:** Home → Services → Passport → Profile
+**Home shortcuts:** Manage users and announcements, reports and audit activity, service directory, notifications, and application review. The Admin workspace is opened from its Home shortcut, not a persistent bottom tab.
 
 Suggested introduction:
 
-> “I am signed in as Nandi, the Administrator. This dashboard includes the standard tabs plus an Admin tab. Learners can register and access the platform without waiting for approval; other stakeholder role requests are reviewed by the administrator. Privileged administrative roles cannot be self-assigned.”
+> “I am signed in as Nandi, the Administrator. The same four bottom tabs appear, while administrative tools are opened from the Home dashboard. Learners can register and access the platform immediately; farmer, employer, SDF, and provider registrations require administrator review. Administrator and internal-staff roles cannot be self-registered.”
 
 ### Home — Administration dashboard
 
@@ -290,11 +308,11 @@ Say:
 
 Point out that the counts reflect the current development data and are not an official AgriSETA report.
 
-### Admin — account administration
+### Administration — account management
 
 Say:
 
-> “The Admin tab lists and searches registered user accounts. Learners can register themselves and sign in immediately. Farmer, employer, SDF, and training-provider role requests are reviewed by the administrator before sign-in is enabled. Administrators can also activate or deactivate accounts.”
+> “The Administration workspace lists and searches user accounts, reviews stakeholder role requests, and lets authorized administrators provision accounts, assign roles, update account details, and activate or deactivate users. Role permissions are enforced by the API.”
 
 Continue:
 
@@ -316,13 +334,13 @@ Open a service detail if useful. For **AgriLearn**, say:
 
 Say:
 
-> “The Administrator can inspect the opportunity catalogue, search and filter records, open details, and review the information presented to users. Listings and application states remain subject to the same prototype-data notices.”
+> “The Administrator can review submitted opportunities, approve or reject them, publish eligible listings, and manage published content. Learners only see opportunities that are published and eligible for their account. Review and publication do not independently verify accreditation, official status, or external availability.”
 
-### Alerts — Administrator notifications
+### Notifications — Administrator account
 
 Say:
 
-> “This page shows in-app notifications associated with the Administrator account, including the displayed read state. It is not a live email or SMS integration.”
+> “The notification bell opens in-app notices for the Administrator account. If SMTP is configured, transactional email may be sent to each account's registered email address. The app can show a recipient and SMTP acceptance, but does not confirm inbox delivery. SMS and push are not configured.”
 
 ### Profile — Administrator account
 
@@ -332,7 +350,7 @@ Say:
 
 ### Optional AgriLearn walkthrough — Learning administration
 
-Open **AgriLearn → Learning administration** and say:
+Open **Services → Learning Programmes → AgriLearn → Learning administration** and say:
 
 > “The Administrator can review provider profiles, programme listings, and enrolment requests, and administer learning categories and in-app guides. Demonstration enrolments are not provider-reviewed. Publishing a listing is a workflow decision; it does not independently verify accreditation or official AgriSETA status.”
 
@@ -346,9 +364,9 @@ If showing **Audit activity** or **Review applications**, say:
 
 ## Optional 7. Internal Staff role
 
-**Demo account:** `multirole`  
-**Role to present:** Internal Staff only if the account is already authenticated with that assigned role. The demo account initially uses Administrator; do not imply users can switch roles themselves.  
-**Tabs:** Home → Services → Opportunities → Alerts → Profile. There is no Admin tab for Internal Staff.
+**Demo account:** `multirole`
+**Role to present:** Internal Staff only when an authorized administrator has assigned that role and made it the account's active role. The `multirole` demo account initially signs in as Administrator; an administrator must update its active role before a separate sign-in. Do not imply users can switch roles themselves.
+**Bottom tabs:** Home → Services → Passport → Profile. There is no user-management workspace for Internal Staff.
 
 ### Home — Internal Staff dashboard
 
@@ -368,11 +386,11 @@ Say:
 
 > “This page lets staff inspect opportunities, including review opportunities where available. Any review action remains subject to server-side authorization.”
 
-### Alerts — Internal Staff notifications
+### Notifications — Internal Staff account
 
 Say:
 
-> “This page shows in-app alerts for the staff account when notification records are available.”
+> “The notification bell shows in-app alerts for this staff account. Transactional email depends on SMTP configuration and is not proof of inbox delivery; SMS and push are not configured.”
 
 ### Profile — Internal Staff account
 
@@ -384,7 +402,7 @@ Say:
 
 ### Opportunity detail and application tracker
 
-> “The detail page groups the description, eligibility, benefits, required documents, instructions, and any configured dates. The application tracker shows the signed-in user's reference and status. If the record is labelled as synthetic or prototype content, the dates and criteria are not official, and the application is not sent externally.”
+> “The detail page groups the description, eligibility, benefits, required documents, instructions, and configured dates. Applicants can save a draft, submit an application, and track their own reference and status. Active applications are hidden from that user's opportunity browse list. In-app submissions are not automatically transmitted to an external organisation; where an external link is provided, the applicant must follow it separately.”
 
 ### Back button and navigation
 
@@ -394,18 +412,22 @@ Say:
 
 > “The application shows loading, empty, unavailable, and error states. It does not invent notifications, applications, official learning results, or certificates to make the screen look populated. Any module progress shown is prototype-only.”
 
+### Service cards and filters
+
+> “The Services screen searches and filters cards by Learning, Funding, and Work. Cards may open listings, account features, or informational pages. Check each card's status note: a directory listing or in-app workflow does not by itself mean that an external service is connected. The learner walkthrough above explains the current cards and their limits.”
+
 ## Closing statement
 
-> “This demonstration shows a shared agricultural platform with separate, authenticated experiences for learners, farmers, employers, skills development facilitators, training providers, and administrators. Search, saved records, application tracking, demo enrolments, started guides, provider submissions, and administrative review are connected to the development API. Course and provider listings are demonstration records. Verified AgriSETA data, external provider integrations, real course delivery, and production persistence require approved sources and configuration.”
+> “This demonstration shows authenticated, role-aware experiences for learners, farmers, employers, SDFs, training providers, administrators, and internal reviewers. Search, account-scoped applications, saved records, demo learning progress, provider submissions, and administrative review are connected to the development API and Neon database. Some records are synthetic. SMTP email is conditional on backend configuration and acceptance does not confirm inbox delivery. Verified AgriSETA data, external provider integrations, accredited course delivery, and production readiness require approved sources, integrations, and further operational work.”
 
 ## Presenter checklist
 
 - [ ] Start the backend and mobile app; verify the API health endpoint.
 - [ ] Begin each role presentation at Landing and Login, then identify the signed-in name and role before showing Home.
-- [ ] Follow the role's tab sequence in this guide; only the Administrator should have an Admin tab.
+- [ ] Show the four persistent tabs (Home, Services, Passport, Profile); open opportunities, notifications, and role tools through the relevant shortcuts.
 - [ ] Log out between roles. Do not present role switching as a user-facing feature.
 - [ ] Use local demo accounts only; never enter real personal information in a demo.
 - [ ] Clearly distinguish synthetic demo listings from verified official information.
-- [ ] Do not claim external applications, messages, accreditation, or course delivery are live.
+- [ ] Do not claim applications are sent externally, SMTP acceptance means inbox delivery, or that accreditation/course delivery is live.
 - [ ] Clean up disposable administrator changes after the demonstration.
 - [ ] Confirm Neon is connected; the API does not run with an in-memory or alternate-database fallback.

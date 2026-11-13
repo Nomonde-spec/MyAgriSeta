@@ -2,10 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -62,10 +63,31 @@ type Opportunity = {
   reviewNote?: string;
   statusHistory?: { status: string; date: string; actor?: string; note?: string }[];
   effectiveStatus?: string;
+  applicationCount?: number;
+  opportunityDetails?: Record<string, string>;
+  eligibilityCriteria?: Record<string, string>;
+  applicationConfiguration?: Record<string, string | number | boolean | null>;
+  applicationQuestions?: {
+    title: string;
+    type: string;
+    required: boolean;
+    description: string;
+    options: string[];
+  }[];
+};
+
+type OpportunityApplication = {
+  id: string;
+  reference: string;
+  applicantName: string;
+  status: string;
+  submittedAt: string | null;
 };
 
 const categories = [
+  'Bursary',
   'Funding',
+  'Learnership',
   'Training',
   'Training Need',
   'Internship',
@@ -77,6 +99,107 @@ const categories = [
   'Market Access',
   'Innovation',
 ];
+const farmerCategories = ['Funding', 'Grants', 'Business Support', 'Mentorship'];
+const employerCategories = ['Employment', 'Internship', 'Workplace Opportunity', 'Training Need'];
+const administratorDetailFields: Record<string, { key: string; label: string }[]> = {
+  Funding: [
+    { key: 'programmeName', label: 'Funding programme name' },
+    { key: 'fundingType', label: 'Funding type' },
+    { key: 'minimumFundingAmount', label: 'Minimum funding amount (ZAR)' },
+    { key: 'maximumFundingAmount', label: 'Maximum funding amount (ZAR)' },
+    { key: 'fundingPurpose', label: 'Funding purpose' },
+    { key: 'eligibleSectors', label: 'Eligible agricultural sectors' },
+    { key: 'projectObjectives', label: 'Project objectives' },
+    { key: 'expectedOutcomes', label: 'Expected outcomes' },
+  ],
+  Grants: [
+    { key: 'programmeName', label: 'Grant programme name' },
+    { key: 'fundingType', label: 'Grant type' },
+    { key: 'minimumFundingAmount', label: 'Minimum grant amount (ZAR)' },
+    { key: 'maximumFundingAmount', label: 'Maximum grant amount (ZAR)' },
+    { key: 'fundingPurpose', label: 'Grant purpose' },
+    { key: 'eligibleSectors', label: 'Eligible agricultural sectors' },
+    { key: 'projectObjectives', label: 'Project objectives' },
+    { key: 'expectedOutcomes', label: 'Expected outcomes' },
+  ],
+  Bursary: [
+    { key: 'programmeName', label: 'Bursary programme name' },
+    { key: 'academicYear', label: 'Academic year' },
+    { key: 'institution', label: 'Institution(s)' },
+    { key: 'qualificationLevel', label: 'Qualification level' },
+    { key: 'fieldOfStudy', label: 'Field of study' },
+    { key: 'studyMode', label: 'Full-time or part-time' },
+    { key: 'coverage', label: 'Covered benefits' },
+    { key: 'bursaryValue', label: 'Bursary value (ZAR)' },
+  ],
+  Internship: [
+    { key: 'programmeName', label: 'Programme name' },
+    { key: 'agriculturalField', label: 'Agricultural field' },
+    { key: 'hostOrganization', label: 'Host organisation' },
+    { key: 'positions', label: 'Number of positions' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'stipend', label: 'Monthly stipend (ZAR)' },
+    { key: 'requiredSkills', label: 'Required skills and qualifications' },
+  ],
+  Learnership: [
+    { key: 'programmeName', label: 'Programme name' },
+    { key: 'agriculturalField', label: 'Agricultural field' },
+    { key: 'hostOrganization', label: 'Host organisation' },
+    { key: 'positions', label: 'Number of positions' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'stipend', label: 'Monthly stipend (ZAR)' },
+    { key: 'programmeOutcomes', label: 'Programme outcomes' },
+  ],
+  Employment: [
+    { key: 'hostOrganization', label: 'Hiring organisation' },
+    { key: 'positions', label: 'Number of positions' },
+    { key: 'employmentType', label: 'Employment type' },
+    { key: 'requiredSkills', label: 'Required skills and qualifications' },
+  ],
+  'Workplace Opportunity': [
+    { key: 'hostOrganization', label: 'Host organisation' },
+    { key: 'positions', label: 'Number of positions' },
+    { key: 'employmentType', label: 'Employment type' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'requiredSkills', label: 'Required skills and qualifications' },
+  ],
+  Mentorship: [
+    { key: 'programmeName', label: 'Programme name' },
+    { key: 'programmeType', label: 'Mentorship category' },
+    { key: 'programmeObjectives', label: 'Learning objectives' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'deliveryMethod', label: 'Delivery method' },
+    { key: 'programmeBenefits', label: 'Programme benefits' },
+  ],
+  Training: [
+    { key: 'programmeName', label: 'Programme name' },
+    { key: 'programmeType', label: 'Programme type' },
+    { key: 'programmeObjectives', label: 'Learning objectives' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'deliveryMethod', label: 'Delivery method' },
+    { key: 'programmeBenefits', label: 'Programme benefits' },
+  ],
+  'Skills Development': [
+    { key: 'programmeName', label: 'Programme name' },
+    { key: 'programmeType', label: 'Programme type' },
+    { key: 'programmeObjectives', label: 'Learning objectives' },
+    { key: 'duration', label: 'Duration' },
+    { key: 'deliveryMethod', label: 'Delivery method' },
+    { key: 'programmeBenefits', label: 'Programme benefits' },
+  ],
+};
+const applicationInformationOptions = [
+  'Personal information',
+  'Contact information',
+  'Academic information',
+  'Employment information',
+  'Business information',
+  'Agricultural experience',
+  'Motivation statement',
+  'Project proposal',
+  'Funding budget',
+  'Relevant skills',
+];
 const audiences = [
   { value: 'learner', label: 'Learners' },
   { value: 'farmer', label: 'Farmers' },
@@ -84,7 +207,7 @@ const audiences = [
   { value: 'sdf', label: 'SDFs' },
   { value: 'training_provider', label: 'Training providers' },
 ];
-const statuses = ['Open', 'Closed'];
+const statuses = ['Open', 'Upcoming', 'Closed'];
 const employmentTypes = ['Permanent', 'Fixed term', 'Seasonal', 'Contract', 'Internship'];
 const sortOptions = [
   { value: 'deadline', label: 'Deadline' },
@@ -93,7 +216,7 @@ const sortOptions = [
 ];
 
 export default function OpportunitiesScreen() {
-  const params = useLocalSearchParams<{ category?: string }>();
+  const params = useLocalSearchParams<{ category?: string; workspace?: string }>();
   const { session } = useAuth();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
@@ -104,6 +227,16 @@ export default function OpportunitiesScreen() {
       ? params.category
       : ''
   );
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setCategory(
+        typeof params.category === 'string' && categories.includes(params.category)
+          ? params.category
+          : ''
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [params.category]);
   const [audience, setAudience] = useState('');
   const [employmentTypeFilter, setEmploymentTypeFilter] = useState('');
   const [status, setStatus] = useState('');
@@ -115,9 +248,31 @@ export default function OpportunitiesScreen() {
   const [savedError, setSavedError] = useState('');
   const [saveBusy, setSaveBusy] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const hasBeenFocused = useRef(false);
+  const visibleCategories = session?.activeRole === 'farmer'
+    ? farmerCategories
+    : session?.activeRole === 'employer'
+      ? employerCategories
+      : session?.activeRole === 'training_provider'
+        ? ['Training', 'Learnership', 'Skills Development', 'Training Service', 'Training Partnership', 'Funding']
+      : categories;
+  const selectedAdminWorkspace = params.workspace === 'review' || params.workspace === 'published'
+    ? params.workspace
+    : 'all';
+  const isAdminPublisherApplicantView = session?.activeRole === 'administrator' && params.workspace === 'applicants';
+
+  useFocusEffect(useCallback(() => {
+    if (hasBeenFocused.current) setRetry((current) => current + 1);
+    hasBeenFocused.current = true;
+  }, []));
 
   useEffect(() => {
     let isCurrent = true;
+    if (session?.activeRole === 'sdf' || session?.activeRole === 'employer') {
+      return () => {
+        isCurrent = false;
+      };
+    }
     const timer = setTimeout(() => {
       const params = new URLSearchParams();
       if (search.trim()) params.set('q', search.trim());
@@ -157,6 +312,11 @@ export default function OpportunitiesScreen() {
 
   useEffect(() => {
     let isCurrent = true;
+    if (session?.activeRole === 'sdf' || session?.activeRole === 'employer') {
+      return () => {
+        isCurrent = false;
+      };
+    }
     apiFetch<{ opportunities: Opportunity[] }>('/opportunities/saved')
       .then((payload) => {
         if (isCurrent) {
@@ -172,7 +332,7 @@ export default function OpportunitiesScreen() {
     return () => {
       isCurrent = false;
     };
-  }, [session]);
+  }, [retry, session]);
 
   const visibleOpportunities = useMemo(
     () => opportunities.filter((opportunity) => !showSaved || savedIds.has(opportunity.id)),
@@ -229,6 +389,137 @@ export default function OpportunitiesScreen() {
     setRetry((current) => current + 1);
   };
 
+  if (session?.activeRole === 'sdf') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.screen}>
+          <BackButton />
+          <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+            <View style={styles.header}>
+              <View>
+                <Text style={styles.eyebrow}>ORGANISATION WORKFORCE</Text>
+                <Text style={styles.heading}>Programme submissions</Text>
+                <Text style={styles.subtitle}>Submit and track skills development programmes and approval outcomes.</Text>
+              </View>
+            </View>
+            <StakeholderOpportunityManagement
+              activeRole="sdf"
+              contactEmail={session.user.email}
+            />
+          </ScrollView>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (session?.activeRole === 'employer') {
+    const requestedWorkspace = typeof params.workspace === 'string' ? params.workspace : 'manage';
+    const workspace = ['manage', 'applicants', 'passports', 'funding'].includes(requestedWorkspace)
+      ? requestedWorkspace
+      : 'manage';
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.screen}>
+          <BackButton />
+          <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.eyebrow}>EMPLOYER WORKSPACE</Text>
+                <Text style={styles.heading}>
+                  {workspace === 'applicants' ? 'Applicant review' : workspace === 'passports' ? 'Applicant skills passports' : workspace === 'funding' ? 'Funding support' : 'Employer opportunities'}
+                </Text>
+                <Text style={styles.subtitle}>
+                  {workspace === 'applicants'
+                    ? 'Review applications for your own published opportunities.'
+                    : workspace === 'passports'
+                      ? 'View skills and credentials only for applicants who have shared their Passport with you.'
+                      : workspace === 'funding'
+                        ? 'Find official employer funding and training support information.'
+                        : 'Create and manage your organisation’s job and workplace opportunity submissions.'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Manage employer profile"
+                onPress={() => router.push('/profile')}
+                style={styles.headerButton}
+              >
+                <Ionicons name="business-outline" size={19} color={palette.primary} />
+              </Pressable>
+            </View>
+            {workspace === 'manage' ? (
+              <StakeholderOpportunityManagement
+                activeRole="employer"
+                contactEmail={session.user.email}
+              />
+            ) : null}
+            {workspace === 'applicants' ? <EmployerApplicantManagement /> : null}
+            {workspace === 'passports' ? <EmployerApplicantManagement view="passports" /> : null}
+            {workspace === 'funding' ? <EmployerFundingSupport /> : null}
+          </ScrollView>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (isAdminPublisherApplicantView) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.screen}>
+          <BackButton />
+          <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+            <View style={styles.header}>
+              <View>
+                <Text style={styles.eyebrow}>PUBLISHER WORKSPACE</Text>
+                <Text style={styles.heading}>My posted job applicants</Text>
+                <Text style={styles.subtitle}>Review and schedule applicants only for job opportunities you posted.</Text>
+              </View>
+            </View>
+            <EmployerApplicantManagement />
+          </ScrollView>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (session?.activeRole === 'training_provider') {
+    const requestedWorkspace = typeof params.workspace === 'string' ? params.workspace : 'submissions';
+    const workspace = requestedWorkspace === 'outcomes' ? 'outcomes' : 'submissions';
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.screen}>
+          <BackButton />
+          <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.eyebrow}>TRAINING PROVIDER WORKSPACE</Text>
+                <Text style={styles.heading}>{workspace === 'outcomes' ? 'Programme review outcomes' : 'Programme submissions'}</Text>
+                <Text style={styles.subtitle}>
+                  {workspace === 'outcomes'
+                    ? 'Track administrator decisions and review notes for your submitted programmes.'
+                    : 'Submit courses, learnerships, training services, partnerships, and eligible training-related funding for review.'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Manage training provider profile"
+                onPress={() => router.push({ pathname: '/learning', params: { section: 'Provider tools' } })}
+                style={styles.headerButton}
+              >
+                <Ionicons name="business-outline" size={19} color={palette.primary} />
+              </Pressable>
+            </View>
+            <StakeholderOpportunityManagement
+              activeRole="training_provider"
+              contactEmail={session.user.email}
+              workspace={workspace}
+            />
+          </ScrollView>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.screen}>
@@ -241,42 +532,35 @@ export default function OpportunitiesScreen() {
         >
           <View style={styles.header}>
           <View>
-            <Text style={styles.eyebrow}>AGRICONNECT 360</Text>
-            <Text style={styles.heading}>Opportunities</Text>
-            <Text style={styles.subtitle}>Find agriculture opportunities relevant to your journey.</Text>
+            <Text style={styles.eyebrow}>{session?.activeRole === 'administrator' ? 'ADMINISTRATION' : 'AGRICONNECT 360'}</Text>
+            <Text style={styles.heading}>{session?.activeRole === 'administrator'
+              ? selectedAdminWorkspace === 'review'
+                ? 'Submission review'
+                : selectedAdminWorkspace === 'published' ? 'Published listings' : 'Opportunity administration'
+              : 'Opportunities'}</Text>
+            <Text style={styles.subtitle}>{session?.activeRole === 'administrator'
+              ? selectedAdminWorkspace === 'review'
+                ? 'Review submitted opportunities and programmes.'
+                : selectedAdminWorkspace === 'published'
+                  ? 'Manage approved and published opportunity listings.'
+                  : 'Review and manage opportunity submissions.'
+              : 'Find agriculture opportunities relevant to your journey.'}</Text>
             </View>
-          <Pressable
+          {session?.activeRole !== 'administrator' ? <Pressable
             accessibilityRole="button"
             accessibilityLabel="View my applications"
             onPress={() => router.push('/applications')}
             style={styles.headerButton}
           >
             <Ionicons name="reader-outline" size={19} color={palette.primary} />
-          </Pressable>
+          </Pressable> : null}
         </View>
 
-        {session?.activeRole === 'administrator' ? <AdministratorOpportunityManagement /> : null}
-        {session?.activeRole === 'employer' ? (
-          <>
-            <StakeholderOpportunityManagement activeRole="employer" contactEmail={session.user.email} />
-            <EmployerApplicantManagement />
-            <EmployerCandidateDiscovery />
-            <EmployerFundingSupport />
-          </>
+        {session?.activeRole === 'administrator' ? (
+          <AdministratorOpportunityManagement
+            workspace={selectedAdminWorkspace}
+          />
         ) : null}
-        {session?.activeRole === 'sdf' ? (
-          <>
-            <View style={styles.managementPanel}>
-              <Text style={styles.managementSubheading}>Workforce skills planning</Text>
-              <Text style={styles.sectionHint}>Assess organisation skills gaps, prepare WSP and ATR working records, and coordinate training cohorts.</Text>
-              <Pressable accessibilityRole="button" onPress={() => router.push('/sdf-workforce')} style={styles.managementButton}>
-                <Text style={styles.managementButtonText}>Open SDF planning workspace</Text>
-              </Pressable>
-            </View>
-            <StakeholderOpportunityManagement activeRole="sdf" contactEmail={session.user.email} />
-          </>
-        ) : null}
-        {session?.activeRole === 'training_provider' ? <StakeholderOpportunityManagement activeRole="training_provider" contactEmail={session.user.email} /> : null}
         {session && !['administrator', 'employer', 'sdf', 'training_provider'].includes(session.activeRole) ? (
           <View style={styles.managementPanel}>
             <Text style={styles.managementSubheading}>Posting access</Text>
@@ -286,6 +570,8 @@ export default function OpportunitiesScreen() {
           </View>
         ) : null}
 
+        {session?.activeRole !== 'administrator' ? (
+        <>
         <View style={styles.searchBox}>
           <Ionicons name="search-outline" size={18} color={palette.muted} />
           <TextInput
@@ -312,7 +598,7 @@ export default function OpportunitiesScreen() {
         </View>
         <View style={styles.chipRow}>
           <FilterChip label="All" selected={!category} onPress={() => setCategory('')} />
-          {categories.map((item) => (
+          {visibleCategories.map((item) => (
             <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />
           ))}
         </View>
@@ -453,6 +739,8 @@ export default function OpportunitiesScreen() {
             )) : <EmptyState text="There are no additional opportunities matching the selected filters." />}
           </>
         )}
+        </>
+        ) : null}
         </ScrollView>
       </View>
     </SafeAreaView>
@@ -611,26 +899,30 @@ function OpportunityCard({
 function StakeholderOpportunityManagement({
   activeRole,
   contactEmail,
+  workspace = 'submissions',
 }: {
   activeRole: 'employer' | 'sdf' | 'training_provider';
   contactEmail: string;
+  workspace?: 'submissions' | 'outcomes';
 }) {
   const isEmployer = activeRole === 'employer';
   const isSdf = activeRole === 'sdf';
   const isProvider = activeRole === 'training_provider';
+  const isOutcomesView = isProvider && workspace === 'outcomes';
   const endpoint = isEmployer ? '/employer/opportunities' : isSdf ? '/sdf/opportunities' : '/provider/opportunities';
   const listingLabel = isEmployer ? 'job listings' : isSdf ? 'skills development opportunities' : 'training programmes';
   const opportunityCategories = isEmployer
     ? ['Employment', 'Internship', 'Workplace Opportunity', 'Training Need']
     : isProvider
-    ? ['Training', 'Learnership', 'Training Service', 'Training Partnership']
-    : ['Skills Development', 'Training Need', 'Training', 'Learnership', 'Funding', 'Training Partnership'];
+    ? ['Training', 'Learnership', 'Skills Development', 'Training Service', 'Training Partnership', 'Funding']
+    : ['Skills Development', 'Training Need', 'Training', 'Learnership', 'Training Partnership'];
   const [submissions, setSubmissions] = useState<Opportunity[]>([]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [location, setLocation] = useState('');
   const [employmentType, setEmploymentType] = useState('');
   const [category, setCategory] = useState(activeRole === 'employer' ? 'Employment' : 'Training');
+  const [opportunityDetails, setOpportunityDetails] = useState<Record<string, string>>({});
   const isEmployerTrainingNeed = isEmployer && category === 'Training Need';
   const [audience, setAudience] = useState('learner');
   const [requirements, setRequirements] = useState('');
@@ -658,6 +950,7 @@ function StakeholderOpportunityManagement({
   const [closingDate, setClosingDate] = useState('');
   const [applicationInstructions, setApplicationInstructions] = useState('');
   const [editingId, setEditingId] = useState('');
+  const [isFormExpanded, setIsFormExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -685,11 +978,13 @@ function StakeholderOpportunityManagement({
 
   const resetForm = () => {
     setEditingId('');
+    setIsFormExpanded(false);
     setTitle('');
     setDescription('');
     setLocation('');
     setEmploymentType('');
     setCategory(isEmployer ? 'Employment' : 'Training');
+    setOpportunityDetails({});
     setAudience('learner');
     setRequirements('');
     setQualifications('');
@@ -712,11 +1007,13 @@ function StakeholderOpportunityManagement({
 
   const editSubmission = (item: Opportunity) => {
     setEditingId(item.id);
+    setIsFormExpanded(true);
     setTitle(item.title);
     setDescription(item.description);
     setLocation(item.location || '');
     setEmploymentType(item.employmentType || '');
     setCategory(item.category);
+    setOpportunityDetails(item.opportunityDetails || {});
     setAudience(item.role);
     setRequirements((item.requirements || []).join('\n'));
     setQualifications(item.qualifications || '');
@@ -828,6 +1125,7 @@ function StakeholderOpportunityManagement({
         closingDate,
         applicationInstructions,
         ...(supportingDocuments.length ? { supportingDocuments } : {}),
+        ...(isProvider && category === 'Funding' ? { opportunityDetails } : {}),
       };
       const result = await apiFetch<{ opportunity: Opportunity }>(
         editingId ? `${endpoint}/${encodeURIComponent(editingId)}` : endpoint,
@@ -865,6 +1163,9 @@ function StakeholderOpportunityManagement({
     }
   };
 
+  const visibleSubmissions = isOutcomesView
+    ? submissions.filter((item) => item.status !== 'Draft')
+    : submissions;
   const submissionCounts = {
     pending: submissions.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status)).length,
     approved: submissions.filter((item) => ['Approved', 'Published'].includes(item.status)).length,
@@ -889,7 +1190,7 @@ function StakeholderOpportunityManagement({
           Provider account verification: {providerVerificationStatus || 'Loading'}. Programme accreditation information is a provider submission and is not independently verified by this prototype.
         </Text>
       ) : null}
-      {!isEmployer ? (
+      {!isEmployer && !isOutcomesView ? (
         <View style={styles.submissionSummary}>
           <Text style={styles.summaryItem}>Pending approval: {submissionCounts.pending}</Text>
           <Text style={styles.summaryItem}>Approved / published: {submissionCounts.approved}</Text>
@@ -908,9 +1209,30 @@ function StakeholderOpportunityManagement({
         </View>
       ) : null}
       {message ? <Text accessibilityRole="alert" style={styles.managementMessage}>{message}</Text> : null}
+      {!isOutcomesView ? (
+      <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: isFormExpanded }}
+        onPress={() => setIsFormExpanded((expanded) => !expanded)}
+        style={styles.createContentCard}
+      >
+        <View style={styles.createContentIcon}>
+          <Ionicons name={isFormExpanded ? 'create-outline' : 'add-circle-outline'} size={24} color={palette.primary} />
+        </View>
+        <View style={styles.fundingStatusCopy}>
+          <Text style={styles.managementTitle}>
+            {editingId ? `Editing: ${title || 'submission'}` : isFormExpanded ? 'Opportunity form' : isEmployer ? 'Create a job or training opportunity' : isSdf ? 'Submit a skills development opportunity' : 'Submit a training programme'}
+          </Text>
+          <Text style={styles.managementMeta}>{isFormExpanded ? 'Tap to minimise this form.' : 'Open the form when you are ready to create a submission.'}</Text>
+        </View>
+        <Ionicons name={isFormExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={palette.primary} />
+      </Pressable>
+      {isFormExpanded ? (
+      <>
       <Text style={styles.managementSubheading}>
         {editingId
-          ? 'Edit submission'
+          ? `Editing: ${title || 'submission'}`
           : isEmployer
             ? isEmployerTrainingNeed ? 'Submit an employee training need' : 'Submit a job, internship, or workplace opportunity'
             : isSdf
@@ -932,13 +1254,16 @@ function StakeholderOpportunityManagement({
           </View>
           {isEmployerTrainingNeed ? (
             <>
-              <Text style={styles.filterLabel}>Who should respond?</Text>
+              <Text style={styles.filterLabel}>Training sponsor or delivery partner</Text>
               <View style={styles.chipRow}>
-                {[{ value: 'training_provider', label: 'Training providers' }, { value: 'sdf', label: 'SDFs' }].map((item) => (
+                {[
+                  { value: 'training_provider', label: 'Training providers' },
+                  { value: 'sdf', label: 'SDFs' },
+                ].map((item) => (
                   <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />
                 ))}
               </View>
-              <Text style={styles.managementMeta}>Training needs are shared with the selected provider/SDF audience only after administrator approval. Do not include employee names or sensitive personal information.</Text>
+              <Text style={styles.managementMeta}>This listing is for learners seeking training. Select the training provider or SDF sponsoring or delivering it. Learners can apply after administrator approval and publication. Do not include employee names or sensitive personal information.</Text>
             </>
           ) : null}
         </>
@@ -959,6 +1284,24 @@ function StakeholderOpportunityManagement({
             ))}
             <FilterChip label="All eligible users" selected={audience === '*'} onPress={() => setAudience('*')} />
               </View>
+            </>
+          ) : null}
+          {isProvider && category === 'Funding' ? (
+            <>
+              <Text style={styles.managementSubheading}>Training-related funding details</Text>
+              {administratorDetailFields.Funding.map((field) => (
+                <TextInput
+                  key={field.key}
+                  accessibilityLabel={field.label}
+                  value={opportunityDetails[field.key] || ''}
+                  onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, [field.key]: value }))}
+                  placeholder={field.label}
+                  style={[styles.managementInput, ['fundingPurpose', 'projectObjectives', 'expectedOutcomes'].includes(field.key) && styles.managementMultiline]}
+                  multiline={['fundingPurpose', 'projectObjectives', 'expectedOutcomes'].includes(field.key)}
+                  maxLength={500}
+                />
+              ))}
+              <Text style={styles.managementMeta}>Funding submissions must support agricultural training or skills development. Administrator review does not guarantee funding approval.</Text>
             </>
           ) : null}
           <TextInput
@@ -1008,7 +1351,7 @@ function StakeholderOpportunityManagement({
       {!isEmployer ? (
         <>
           <Text style={styles.managementMeta}>Contact email on this submission: {contactEmail}. Submissions are not visible publicly until an administrator approves and publishes them.</Text>
-          <Text style={styles.managementSubheading}>Supporting documents</Text>
+          <Text style={styles.managementSubheading}>{isProvider ? 'Accreditation & supporting documents' : 'Supporting documents'}</Text>
           {savedDocumentNames.map((name) => <Text key={name} style={styles.managementMeta}>Attached: {name}</Text>)}
           {supportingDocuments.map((document, index) => (
             <View key={`${document.filename}-${index}`} style={styles.supportingDocumentRow}>
@@ -1019,7 +1362,7 @@ function StakeholderOpportunityManagement({
             </View>
           ))}
           <Pressable accessibilityRole="button" disabled={busy || pickingDocument || supportingDocuments.length >= 5} onPress={() => void selectSupportingDocument()} style={[styles.managementButton, (busy || pickingDocument) && styles.managementDisabled]}>
-            <Text style={styles.managementButtonText}>{pickingDocument ? 'Selecting…' : 'Add supporting document'}</Text>
+            <Text style={styles.managementButtonText}>{pickingDocument ? 'Selecting…' : isProvider ? 'Add accreditation or supporting document' : 'Add supporting document'}</Text>
           </Pressable>
           <Text style={styles.managementMeta}>PDF, JPG or PNG; 2 MB each, 5 MB total. Only administrators can view submission files. Selecting files replaces existing attachments when you save.</Text>
         </>
@@ -1037,9 +1380,13 @@ function StakeholderOpportunityManagement({
           <Text style={styles.clearText}>Cancel editing</Text>
         </Pressable>
       ) : null}
+      </>
+      ) : null}
+      </>
+      ) : null}
 
-      <Text style={styles.managementSubheading}>Your submissions</Text>
-      {submissions.length ? submissions.map((item) => (
+      <Text style={styles.managementSubheading}>{isOutcomesView ? 'Review decisions and status' : 'Your submissions'}</Text>
+      {visibleSubmissions.length ? visibleSubmissions.map((item) => (
         <View key={item.id} style={styles.managementCard}>
           <Text style={styles.managementTitle}>{item.title}</Text>
           <Text style={styles.managementMeta}>{item.organization} · {item.category} · {item.status}</Text>
@@ -1047,7 +1394,24 @@ function StakeholderOpportunityManagement({
           {item.startDate || item.endDate ? <Text style={styles.managementMeta}>Programme dates: {item.startDate || 'Not set'} to {item.endDate || 'Not set'}</Text> : null}
           {item.trainingObjectives ? <Text style={styles.managementMeta}>Objectives: {item.trainingObjectives}</Text> : null}
           {item.supportingDocuments?.map((document) => <Text key={document.id} style={styles.managementMeta}>Supporting document: {document.filename}</Text>)}
-          <View style={styles.managementActions}>
+          {!isOutcomesView ? <View style={styles.managementActions}>
+            {isProvider && item.status === 'Published' ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => Alert.alert(
+                  'Archive approved listing?',
+                  'This will remove the listing from public opportunities. It cannot be edited or republished from this workspace.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Archive listing', style: 'destructive', onPress: () => void withdraw(item) },
+                  ]
+                )}
+                style={[styles.managementButton, styles.rejectManagementButton, busy && styles.managementDisabled]}
+              >
+                <Text style={styles.managementButtonText}>Archive approved listing</Text>
+              </Pressable>
+            ) : null}
             {!['Published', 'Archived'].includes(item.status) ? (
               <Pressable accessibilityRole="button" disabled={busy} onPress={() => editSubmission(item)} style={[styles.managementButton, styles.secondaryManagementButton]}>
                 <Text style={styles.secondaryManagementText}>Edit</Text>
@@ -1058,9 +1422,11 @@ function StakeholderOpportunityManagement({
                 <Text style={styles.managementButtonText}>Withdraw</Text>
               </Pressable>
             ) : null}
-          </View>
+          </View> : null}
         </View>
-      )) : <EmptyState text={`You have not submitted any ${listingLabel}.`} />}
+      )) : <EmptyState text={isOutcomesView
+        ? 'No submitted programmes have review outcomes yet.'
+        : `You have not submitted any ${listingLabel}.`} />}
     </View>
   );
 }
@@ -1070,6 +1436,7 @@ type EmployerCandidate = {
   reference: string;
   opportunityId: string;
   opportunityTitle: string;
+  opportunityCategory: string;
   applicationData: {
     fullName?: string;
     email?: string;
@@ -1079,13 +1446,80 @@ type EmployerCandidate = {
   status: string;
   submittedAt: string | null;
   feedback: string;
+  interviewAt: string;
+  inductionDate: string;
+  employmentStartDate: string;
   documents: { id: string; requirement: string; filename: string; mimeType: string; size: number }[];
 };
 
-function EmployerApplicantManagement() {
+type ApplicantPassport = {
+  skills: { id: string; name: string; category: string; level: string; verificationStatus: string }[];
+  certificates: { courseId: string; issuer: string; issuedAt: string; verificationStatus: string }[];
+  records: { id: string; recordType: string; title: string; organisation: string; level: string; status: string; verificationStatus: string }[];
+};
+
+function EmployerApplicantPassport({ applicationId }: { applicationId: string }) {
+  const [passport, setPassport] = useState<ApplicantPassport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadPassport = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const payload = await apiFetch<ApplicantPassport>(
+        `/employer/applications/${encodeURIComponent(applicationId)}/passport`
+      );
+      setPassport(payload);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Applicant passport could not be loaded.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.applicationList}>
+      <Pressable accessibilityRole="button" disabled={loading} onPress={() => void loadPassport()} style={styles.summaryLink}>
+        <Text style={styles.summaryLinkText}>{loading ? 'Loading passport…' : passport ? 'Refresh applicant skills passport' : 'View applicant skills passport'}</Text>
+      </Pressable>
+      {error ? <Text accessibilityRole="alert" style={styles.managementError}>{error}</Text> : null}
+      {passport ? (
+        <View>
+          <Text style={styles.managementMeta}>Self-reported skills · not independently verified</Text>
+          {passport.skills.length ? passport.skills.map((skill) => (
+            <Text key={skill.id} style={styles.managementMeta}>
+              {skill.name}{skill.category ? ` · ${skill.category}` : ''} · {skill.level}
+            </Text>
+          )) : <Text style={styles.managementMeta}>No skills recorded.</Text>}
+          <Text style={styles.managementMeta}>Recorded credentials</Text>
+          {passport.certificates.length ? passport.certificates.map((credential) => (
+            <Text key={`${credential.courseId}-${credential.issuedAt}-${credential.issuer}`} style={styles.managementMeta}>
+              {credential.issuer} · {credential.issuedAt} · {credential.verificationStatus}
+            </Text>
+          )) : <Text style={styles.managementMeta}>No credentials recorded. A trusted credential issuer is not connected.</Text>}
+          <Text style={styles.managementMeta}>Qualifications and experience</Text>
+          {passport.records.length ? passport.records.map((record) => (
+            <Text key={record.id} style={styles.managementMeta}>
+              {record.title} · {[record.recordType, record.organisation, record.level, record.status, record.verificationStatus].filter(Boolean).join(' · ')}
+            </Text>
+          )) : <Text style={styles.managementMeta}>No additional Passport records provided.</Text>}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function EmployerApplicantManagement({ view = 'recruitment' }: { view?: 'recruitment' | 'passports' }) {
   const [applications, setApplications] = useState<EmployerCandidate[]>([]);
   const [search, setSearch] = useState('');
   const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const [schedule, setSchedule] = useState<Record<string, {
+    interviewAt: string;
+    inductionDate: string;
+    employmentStartDate: string;
+  }>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -1116,15 +1550,26 @@ function EmployerApplicantManagement() {
     setError('');
     setMessage('');
     try {
-      const { application: updated } = await apiFetch<{ application: { status: string; feedback?: string } }>(
+      const currentSchedule = schedule[application.id] || {
+        interviewAt: application.interviewAt || '',
+        inductionDate: application.inductionDate || '',
+        employmentStartDate: application.employmentStartDate || '',
+      };
+      const { application: updated } = await apiFetch<{ application: EmployerCandidate }>(
         `/employer/applications/${encodeURIComponent(application.id)}/status`,
         {
           method: 'PATCH',
-          body: JSON.stringify({ status, feedback: feedback[application.id] || '' }),
+          body: JSON.stringify({
+            status,
+            feedback: feedback[application.id] || '',
+            interviewAt: currentSchedule.interviewAt,
+            inductionDate: currentSchedule.inductionDate,
+            employmentStartDate: currentSchedule.employmentStartDate,
+          }),
         }
       );
       setApplications((current) => current.map((item) => item.id === application.id
-        ? { ...item, status: updated.status, feedback: updated.feedback || '' }
+        ? { ...item, ...updated }
         : item));
       setMessage(`${application.applicationData.fullName || 'Candidate'} moved to ${updated.status}.`);
     } catch (cause) {
@@ -1139,12 +1584,17 @@ function EmployerApplicantManagement() {
       .toLowerCase().includes(search.trim().toLowerCase())
   );
   const activeStatuses = ['Submitted', 'Under Review', 'Shortlisted', 'Interview'];
+  const isPassportView = view === 'passports';
+  const isRecruitmentOpportunity = (application: EmployerCandidate) =>
+    ['Employment', 'Internship', 'Workplace Opportunity'].includes(application.opportunityCategory);
 
   return (
     <View style={styles.managementPanel}>
-      <SectionHeading title="Candidates and recruitment" count={applications.length} />
+      <SectionHeading title={isPassportView ? 'Applicant skills passports' : 'Candidates and recruitment'} count={applications.length} />
       <Text style={styles.sectionHint}>
-        Review only candidates who applied to your own published jobs, internships, workplace opportunities, or training needs. Applicant details and files are private recruitment information; access is recorded.
+        {isPassportView
+          ? 'Passport information is available only for applicants who have shared it with your organisation. Records are limited to the applicants for your published opportunities.'
+          : 'Review only candidates who applied to your own published jobs, internships, workplace opportunities, or training needs. Applicant details and files are private recruitment information; access is recorded.'}
       </Text>
       {error ? (
         <View>
@@ -1163,10 +1613,10 @@ function EmployerApplicantManagement() {
         <Text style={styles.summaryLinkText}>Refresh candidates</Text>
       </Pressable>
       <TextInput
-        accessibilityLabel="Search candidates"
+        accessibilityLabel={isPassportView ? 'Search applicants' : 'Search candidates'}
         value={search}
         onChangeText={setSearch}
-        placeholder="Search candidates, applications, or motivation"
+        placeholder={isPassportView ? 'Search applicants or opportunities' : 'Search candidates, applications, or motivation'}
         style={styles.managementInput}
       />
       {loading ? <ActivityIndicator size="small" color={palette.primary} style={styles.loading} /> : null}
@@ -1177,14 +1627,73 @@ function EmployerApplicantManagement() {
         <View key={application.id} style={styles.managementCard}>
           <Text style={styles.managementTitle}>{application.applicationData.fullName || 'Applicant'}</Text>
           <Text style={styles.managementMeta}>{application.opportunityTitle} · {application.reference}</Text>
-          <Text style={styles.managementMeta}>{application.applicationData.email || 'Email not provided'}{application.applicationData.phone ? ` · ${application.applicationData.phone}` : ''}</Text>
-          <Text style={styles.managementMeta}>{application.status}{application.submittedAt ? ` · Submitted ${formatDate(application.submittedAt.slice(0, 10))}` : ''}</Text>
-          {application.applicationData.motivation ? <Text style={styles.description}>{application.applicationData.motivation}</Text> : null}
-          {application.feedback ? <Text style={styles.managementMeta}>Feedback shared with applicant: {application.feedback}</Text> : null}
-          {application.documents.map((document) => (
+          {!isPassportView ? (
+            <>
+              <Text style={styles.managementMeta}>{application.applicationData.email || 'Email not provided'}{application.applicationData.phone ? ` · ${application.applicationData.phone}` : ''}</Text>
+              <Text style={styles.managementMeta}>{application.status}{application.submittedAt ? ` · Submitted ${formatDate(application.submittedAt.slice(0, 10))}` : ''}</Text>
+              {application.applicationData.motivation ? <Text style={styles.description}>{application.applicationData.motivation}</Text> : null}
+              {application.feedback ? <Text style={styles.managementMeta}>Feedback shared with applicant: {application.feedback}</Text> : null}
+              {isRecruitmentOpportunity(application) ? (
+                <View style={styles.schedulePanel}>
+                  <Text style={styles.managementTitle}>Interview and employment schedule</Text>
+                  <Text style={styles.managementMeta}>Only you, as the opportunity publisher, can set these dates.</Text>
+                  <TextInput
+                    accessibilityLabel={`Interview date and time for ${application.applicationData.fullName || 'candidate'}`}
+                    value={schedule[application.id]?.interviewAt ?? application.interviewAt ?? ''}
+                    onChangeText={(value) => setSchedule((current) => ({
+                      ...current,
+                      [application.id]: {
+                        interviewAt: value,
+                        inductionDate: current[application.id]?.inductionDate ?? application.inductionDate ?? '',
+                        employmentStartDate: current[application.id]?.employmentStartDate ?? application.employmentStartDate ?? '',
+                      },
+                    }))}
+                    placeholder="Interview date & time (YYYY-MM-DDTHH:MM)"
+                    style={styles.managementInput}
+                    maxLength={16}
+                    autoCapitalize="none"
+                  />
+                  <TextInput
+                    accessibilityLabel={`Induction date for ${application.applicationData.fullName || 'candidate'}`}
+                    value={schedule[application.id]?.inductionDate ?? application.inductionDate ?? ''}
+                    onChangeText={(value) => setSchedule((current) => ({
+                      ...current,
+                      [application.id]: {
+                        interviewAt: current[application.id]?.interviewAt ?? application.interviewAt ?? '',
+                        inductionDate: value,
+                        employmentStartDate: current[application.id]?.employmentStartDate ?? application.employmentStartDate ?? '',
+                      },
+                    }))}
+                    placeholder="Induction date (YYYY-MM-DD)"
+                    style={styles.managementInput}
+                    maxLength={10}
+                    autoCapitalize="none"
+                  />
+                  <TextInput
+                    accessibilityLabel={`Job start date for ${application.applicationData.fullName || 'candidate'}`}
+                    value={schedule[application.id]?.employmentStartDate ?? application.employmentStartDate ?? ''}
+                    onChangeText={(value) => setSchedule((current) => ({
+                      ...current,
+                      [application.id]: {
+                        interviewAt: current[application.id]?.interviewAt ?? application.interviewAt ?? '',
+                        inductionDate: current[application.id]?.inductionDate ?? application.inductionDate ?? '',
+                        employmentStartDate: value,
+                      },
+                    }))}
+                    placeholder="Job start date (YYYY-MM-DD)"
+                    style={styles.managementInput}
+                    maxLength={10}
+                    autoCapitalize="none"
+                  />
+                </View>
+              ) : null}
+            </>
+          ) : <Text style={styles.managementMeta}>{application.opportunityTitle} · {application.status}</Text>}
+          <EmployerApplicantPassport applicationId={application.id} />
+          {!isPassportView ? application.documents.map((document) => (
             <ApplicationCandidateDocument key={document.id} applicationId={application.id} document={document} />
-          ))}
-          {activeStatuses.includes(application.status) ? (
+          )) : null}
+          {!isPassportView && [...activeStatuses, 'Approved'].includes(application.status) ? (
             <>
               <TextInput
                 accessibilityLabel={`Recruitment feedback for ${application.applicationData.fullName || 'candidate'}`}
@@ -1246,9 +1755,12 @@ function ApplicationCandidateDocument({
   );
 }
 
-function AdministratorOpportunityManagement() {
+function AdministratorOpportunityManagement({ workspace }: { workspace: 'all' | 'review' | 'published' }) {
   const [items, setItems] = useState<Opportunity[]>([]);
-  const [filter, setFilter] = useState('All');
+  const [applicationsByOpportunity, setApplicationsByOpportunity] = useState<Record<string, OpportunityApplication[]>>({});
+  const [applicationLoadingId, setApplicationLoadingId] = useState('');
+  const [applicationErrors, setApplicationErrors] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState(workspace === 'review' ? 'Review queue' : workspace === 'published' ? 'Published' : 'All');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [dateFilter, setDateFilter] = useState('All time');
   const [searchText, setSearchText] = useState('');
@@ -1266,6 +1778,28 @@ function AdministratorOpportunityManagement() {
   const [recordExpiresAt, setRecordExpiresAt] = useState('');
   const [instructions, setInstructions] = useState('');
   const [requiredDocuments, setRequiredDocuments] = useState('');
+  const [formStep, setFormStep] = useState(0);
+  const [opportunityDetails, setOpportunityDetails] = useState<Record<string, string>>({});
+  const [eligibilityCriteria, setEligibilityCriteria] = useState<Record<string, string>>({});
+  const [applicationOpeningDate, setApplicationOpeningDate] = useState('');
+  const [maximumApplications, setMaximumApplications] = useState('');
+  const [applicationTerms, setApplicationTerms] = useState('');
+  const [applicationInformation, setApplicationInformation] = useState<string[]>([]);
+  const [applicationQuestions, setApplicationQuestions] = useState<{
+    title: string;
+    type: string;
+    required: boolean;
+    description: string;
+    options: string[];
+  }[]>([]);
+  const [allowSaveAsDraft, setAllowSaveAsDraft] = useState(true);
+  const [allowEditsBeforeClosing, setAllowEditsBeforeClosing] = useState(true);
+  const [allowWithdrawal, setAllowWithdrawal] = useState(true);
+  const [enableReferenceNumbers, setEnableReferenceNumbers] = useState(true);
+  const [enableStatusTracking, setEnableStatusTracking] = useState(true);
+  const [reviewDepartment, setReviewDepartment] = useState('');
+  const [reviewInstructions, setReviewInstructions] = useState('');
+  const [confirmSubmission, setConfirmSubmission] = useState(false);
   const [editingId, setEditingId] = useState('');
   const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -1273,9 +1807,34 @@ function AdministratorOpportunityManagement() {
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [submissionCutoff, setSubmissionCutoff] = useState(0);
-  const statusFilters = ['All', 'Pending Approval', 'Pending Review', 'Changes Requested', 'Draft', 'Approved', 'Published', 'Closed', 'Rejected', 'Archived', 'Open', 'Prototype'];
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [focusedFundingStatus, setFocusedFundingStatus] = useState<string | null>(null);
+  const statusFilters = ['All', 'Review queue', 'Pending Approval', 'Pending Review', 'Changes Requested', 'Draft', 'Approved', 'Published', 'Closed', 'Rejected', 'Archived', 'Open', 'Prototype', 'Not approved / pending approval'];
   const contentCategories = ['Bursary', 'Learnership', 'Funding', 'Employment', 'Internship', 'Workplace Opportunity', 'Grants', 'Training', 'Mentorship', 'Skills Development', 'Training Need', 'Training Service', 'Training Partnership', 'Accreditation'];
   const dateFilters = ['All time', 'Last 7 days', 'Last 30 days'];
+  const formSteps = [
+    'Basic information',
+    'Opportunity details',
+    'Eligibility',
+    'Application',
+    'Documents',
+    'Review setup',
+    'Preview',
+  ];
+  const bursaryFundingCategories = ['Bursary', 'Funding', 'Grants'];
+  const isBursaryFundingOpportunity = (item: Opportunity) =>
+    bursaryFundingCategories.includes(item.category) ||
+    /\b(bursary|funding|grants?)\b/i.test(`${item.type} ${item.title}`);
+
+  useEffect(() => {
+    setFilter(workspace === 'review' ? 'Review queue' : workspace === 'published' ? 'Published' : 'All');
+    setCategoryFilter('All');
+    setDateFilter('All time');
+    setSubmissionCutoff(0);
+    setSearchText('');
+    setFocusedFundingStatus(null);
+    setShowCreateForm(false);
+  }, [workspace]);
 
   useEffect(() => {
     let active = true;
@@ -1292,16 +1851,54 @@ function AdministratorOpportunityManagement() {
     return () => { active = false; };
   }, [reload]);
 
-  const visibleItems = items.filter((item) =>
-    (filter === 'All' || (item.effectiveStatus || item.status) === filter) &&
-    (categoryFilter === 'All' || item.category === categoryFilter) &&
+  const visibleItems = items.filter((item) => {
+    const pendingOrNotApproved = ['Pending Approval', 'Pending Review', 'Changes Requested', 'Draft', 'Rejected'].includes(item.status);
+    const effectiveStatus = item.effectiveStatus || item.status;
+    const matchesStatus = filter === 'All' ||
+      (filter === 'Review queue' ? ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status) :
+      (filter === 'Published' ? item.status === 'Published' :
+        filter === 'Closed' ? item.status === 'Closed' || effectiveStatus === 'Closed' :
+          filter === 'Not approved / pending approval' ? pendingOrNotApproved :
+            filter === 'Open' ? effectiveStatus === 'Open' : item.status === filter));
+    return matchesStatus &&
+    (categoryFilter === 'All' ||
+      (categoryFilter === 'Bursaries & funding' ? isBursaryFundingOpportunity(item) : item.category === categoryFilter)) &&
     (dateFilter === 'All time' || Boolean(item.submittedAt &&
       Date.parse(item.submittedAt) >= submissionCutoff)) &&
-    `${item.title} ${item.organization || ''} ${item.category}`.toLowerCase().includes(searchText.trim().toLowerCase())
-  );
+    `${item.title} ${item.organization || ''} ${item.category}`.toLowerCase().includes(searchText.trim().toLowerCase());
+  });
+  const hasReviewFilter = filter !== 'All' ||
+    categoryFilter !== 'All' ||
+    dateFilter !== 'All time' ||
+    Boolean(searchText.trim());
+  const bursaryFundingItems = items.filter(isBursaryFundingOpportunity);
+  const fundingStatusCards = [
+    { title: 'Published', description: 'Live bursary and funding listings.', count: bursaryFundingItems.filter((item) => item.status === 'Published').length, filter: 'Published' },
+    { title: 'Approved', description: 'Approved and waiting to be published.', count: bursaryFundingItems.filter((item) => item.status === 'Approved').length, filter: 'Approved' },
+    {
+      title: 'Not approved / pending approval',
+      description: 'Drafts, awaiting review, changes requested, and rejected listings.',
+      count: bursaryFundingItems.filter((item) =>
+        ['Pending Approval', 'Pending Review', 'Changes Requested', 'Draft', 'Rejected'].includes(item.status)
+      ).length,
+      filter: 'Not approved / pending approval',
+    },
+  ];
+  const summaryCards = [
+    { title: 'Total', count: items.length, filter: 'All' },
+    { title: 'Published', count: items.filter((item) => item.status === 'Published' && item.effectiveStatus !== 'Closed').length, filter: 'Published' },
+    { title: 'Pending approval', count: items.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status)).length, filter: 'Not approved / pending approval' },
+    { title: 'Drafts', count: items.filter((item) => item.status === 'Draft').length, filter: 'Draft' },
+    { title: 'Closed', count: items.filter((item) => item.status === 'Closed' || item.effectiveStatus === 'Closed').length, filter: 'Closed' },
+  ];
 
-  const createDraft = async () => {
+  const createDraft = async (action: 'draft' | 'approve' = 'draft') => {
     if (busy) return;
+    if (!title.trim() || !description.trim()) {
+      setError('Add an opportunity title and description before saving.');
+      setFormStep(0);
+      return;
+    }
     setBusy(true);
     setError('');
     setMessage('');
@@ -1311,7 +1908,7 @@ function AdministratorOpportunityManagement() {
         {
         method: editingId ? 'PATCH' : 'POST',
         body: JSON.stringify({
-          action: editingId ? 'edit' : 'draft',
+          action: editingId ? 'edit' : action,
           title,
           description,
           category,
@@ -1327,12 +1924,36 @@ function AdministratorOpportunityManagement() {
           recordExpiresAt,
           applicationInstructions: instructions,
           requiredDocuments: requiredDocuments.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+          opportunityDetails,
+          eligibilityCriteria,
+          applicationQuestions,
+          openingDate: applicationOpeningDate || null,
+          applicationConfiguration: {
+            openingDate: applicationOpeningDate,
+            maximumApplications,
+            termsAndConditions: applicationTerms,
+            requiredInformation: applicationInformation,
+            allowSaveAsDraft,
+            allowEditsBeforeClosing,
+            allowAfterClosing: false,
+            allowWithdrawal,
+            enableReferenceNumbers,
+            enableStatusTracking,
+            assignReviewDepartment: reviewDepartment,
+            reviewInstructions,
+          },
         }),
       });
-      setMessage(`${result.opportunity.title} saved as a draft. Approve and publish it after reviewing the source.`);
+      setMessage(action === 'approve' && !editingId
+        ? `${result.opportunity.title} submitted for approval. Publish it only after confirming its source and eligibility.`
+        : `${result.opportunity.title} saved as a draft. Review and publish it when ready.`);
       setEditingId('');
+      setFormStep(0);
+      setConfirmSubmission(false);
       setTitle('');
       setDescription('');
+      setCategory('Bursary');
+      setAudience('learner');
       setOrganization('');
       setLocation('');
       setDeadline('');
@@ -1343,6 +1964,20 @@ function AdministratorOpportunityManagement() {
       setRecordExpiresAt('');
       setInstructions('');
       setRequiredDocuments('');
+      setOpportunityDetails({});
+      setEligibilityCriteria({});
+      setApplicationOpeningDate('');
+      setMaximumApplications('');
+      setApplicationTerms('');
+      setApplicationInformation([]);
+      setApplicationQuestions([]);
+      setAllowSaveAsDraft(true);
+      setAllowEditsBeforeClosing(true);
+      setAllowWithdrawal(true);
+      setEnableReferenceNumbers(true);
+      setEnableStatusTracking(true);
+      setReviewDepartment('');
+      setReviewInstructions('');
       setReload((value) => value + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The content draft could not be saved.');
@@ -1367,8 +2002,51 @@ function AdministratorOpportunityManagement() {
     setRecordExpiresAt(item.recordExpiresAt || '');
     setInstructions(item.applicationInstructions || '');
     setRequiredDocuments((item.requiredDocuments || []).join('\n'));
+    setOpportunityDetails(item.opportunityDetails || {});
+    setEligibilityCriteria(item.eligibilityCriteria || {});
+    setApplicationQuestions(item.applicationQuestions || []);
+    const configuration = item.applicationConfiguration || {};
+    setApplicationInformation(Array.isArray(configuration.requiredInformation)
+      ? configuration.requiredInformation.filter((entry): entry is string => typeof entry === 'string')
+      : []);
+    setApplicationOpeningDate(typeof configuration.openingDate === 'string' ? configuration.openingDate : '');
+    setMaximumApplications(configuration.maximumApplications ? String(configuration.maximumApplications) : '');
+    setApplicationTerms(typeof configuration.termsAndConditions === 'string' ? configuration.termsAndConditions : '');
+    setAllowSaveAsDraft(configuration.allowSaveAsDraft !== false);
+    setAllowEditsBeforeClosing(configuration.allowEditsBeforeClosing !== false);
+    setAllowWithdrawal(configuration.allowWithdrawal !== false);
+    setEnableReferenceNumbers(configuration.enableReferenceNumbers !== false);
+    setEnableStatusTracking(configuration.enableStatusTracking !== false);
+    setReviewDepartment(typeof configuration.assignReviewDepartment === 'string' ? configuration.assignReviewDepartment : '');
+    setReviewInstructions(typeof configuration.reviewInstructions === 'string' ? configuration.reviewInstructions : '');
+    setFormStep(0);
+    setConfirmSubmission(false);
+    setShowCreateForm(true);
     setError('');
     setMessage('');
+  };
+
+  const addApplicationQuestion = () => {
+    if (applicationQuestions.length >= 20) {
+      setError('You can add up to 20 custom application questions.');
+      return;
+    }
+    setApplicationQuestions((current) => [...current, {
+      title: '',
+      type: 'Short Text',
+      required: false,
+      description: '',
+      options: [],
+    }]);
+  };
+
+  const updateApplicationQuestion = (
+    index: number,
+    update: Partial<(typeof applicationQuestions)[number]>
+  ) => {
+    setApplicationQuestions((current) => current.map((question, questionIndex) =>
+      questionIndex === index ? { ...question, ...update } : question
+    ));
   };
 
   const updateStatus = async (item: Opportunity, action: string) => {
@@ -1396,79 +2074,442 @@ function AdministratorOpportunityManagement() {
     }
   };
 
+  const toggleOpportunityApplications = async (item: Opportunity) => {
+    if (applicationsByOpportunity[item.id]) {
+      setApplicationsByOpportunity((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      return;
+    }
+    if (applicationLoadingId) return;
+    setApplicationLoadingId(item.id);
+    setApplicationErrors((current) => ({ ...current, [item.id]: '' }));
+    try {
+      const { applications: results } = await apiFetch<{ applications: OpportunityApplication[] }>(
+        `/admin/opportunities/${encodeURIComponent(item.id)}/applications`
+      );
+      setApplicationsByOpportunity((current) => ({ ...current, [item.id]: results }));
+    } catch (cause) {
+      setApplicationErrors((current) => ({
+        ...current,
+        [item.id]: cause instanceof Error ? cause.message : 'Applications could not be loaded.',
+      }));
+    } finally {
+      setApplicationLoadingId('');
+    }
+  };
+
   return (
     <View style={styles.managementPanel}>
-      <SectionHeading title="Opportunity management and approval" count={items.filter((item) => ['Draft', 'Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status)).length} />
-      <Text style={styles.sectionHint}>Review SDF, provider, and employer submissions. Use Request changes or Reject with a review note. Only approved and published listings appear to eligible users; a provider&apos;s role verification is required to publish a provider programme. Approval does not mean official accreditation.</Text>
+      <SectionHeading
+        title={workspace === 'review'
+          ? 'Opportunity & programme review'
+          : workspace === 'published'
+            ? 'Published opportunities'
+            : 'Opportunity management and approval'}
+        count={workspace === 'published'
+          ? items.filter((item) => item.status === 'Published').length
+          : workspace === 'review'
+            ? items.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status)).length
+            : items.filter((item) => ['Draft', 'Pending Approval', 'Pending Review', 'Changes Requested'].includes(item.status)).length}
+      />
+      <Text style={styles.sectionHint}>
+        {workspace === 'review'
+          ? 'Review submitted employer, SDF, and provider opportunities and programmes. Request changes or reject with a review note. Approval does not establish accreditation.'
+          : workspace === 'published'
+            ? 'Manage listings that have been approved and published. Review their status and archive or unpublish where permitted.'
+            : 'Review SDF, provider, and employer submissions. Use Request changes or Reject with a review note. Only approved and published listings appear to eligible users; a provider&apos;s role verification is required to publish a provider programme. Approval does not mean official accreditation.'}
+      </Text>
       {error ? <Text accessibilityRole="alert" style={styles.managementError}>{error}</Text> : null}
       {message ? <Text accessibilityRole="alert" style={styles.managementMessage}>{message}</Text> : null}
 
-      <View style={styles.managementCard}>
-        <Text style={styles.managementSubheading}>{editingId ? 'Edit content draft' : 'Create bursary, learnership or funding content'}</Text>
-        <TextInput accessibilityLabel="Content title" value={title} onChangeText={setTitle} placeholder="Title" style={styles.managementInput} maxLength={120} />
-        <TextInput accessibilityLabel="Content description" value={description} onChangeText={setDescription} placeholder="Description" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={2000} />
-        <Text style={styles.filterLabel}>Content category</Text>
-        <View style={styles.chipRow}>
-          {contentCategories.map((item) => <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />)}
-        </View>
-        <Text style={styles.filterLabel}>Eligible audience</Text>
-        <View style={styles.chipRow}>
-          {audiences.map((item) => <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />)}
-          <FilterChip label="All eligible users" selected={audience === '*'} onPress={() => setAudience('*')} />
-        </View>
-        <TextInput accessibilityLabel="Organisation" value={organization} onChangeText={setOrganization} placeholder="Organisation or funding source" style={styles.managementInput} maxLength={160} />
-        <TextInput accessibilityLabel="Content location" value={location} onChangeText={setLocation} placeholder="Location" style={styles.managementInput} maxLength={120} />
-        <TextInput accessibilityLabel="Content deadline" value={deadline} onChangeText={setDeadline} placeholder="Application deadline (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
-        <Text style={styles.managementMeta}>Bursary, funding, grant, learnership, and training content needs a source name, HTTP(S) source URL, checked date, and expiry date before an administrator can approve or publish it. Source details support review but do not independently verify official status or eligibility.</Text>
-        <TextInput accessibilityLabel="Information source name" value={sourceName} onChangeText={setSourceName} placeholder="Verified information source name" style={styles.managementInput} maxLength={160} />
-        <TextInput accessibilityLabel="Information source URL" value={sourceUrl} onChangeText={setSourceUrl} placeholder="Source URL (https://...)" style={styles.managementInput} maxLength={500} autoCapitalize="none" keyboardType="url" />
-        <TextInput accessibilityLabel="External application URL" value={applicationUrl} onChangeText={setApplicationUrl} placeholder="Official application page URL (optional)" style={styles.managementInput} maxLength={500} autoCapitalize="none" keyboardType="url" />
-        <TextInput accessibilityLabel="Source checked date" value={sourceVerifiedAt} onChangeText={setSourceVerifiedAt} placeholder="Source checked (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
-        <TextInput accessibilityLabel="Listing expiry date" value={recordExpiresAt} onChangeText={setRecordExpiresAt} placeholder="Listing expires (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
-        <TextInput accessibilityLabel="Application instructions" value={instructions} onChangeText={setInstructions} placeholder="Application instructions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
-        <TextInput accessibilityLabel="Required application documents" value={requiredDocuments} onChangeText={setRequiredDocuments} placeholder="Required documents (one per line)" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={804} />
-        <Text style={styles.managementMeta}>Do not request identity, passport, bank, health, or biometric documents. Applicants can upload PDF, JPG, or PNG files up to 2 MB each.</Text>
-        <Pressable accessibilityRole="button" disabled={busy} onPress={() => void createDraft()} style={[styles.managementButton, busy && styles.managementDisabled]}>
-          <Text style={styles.managementButtonText}>{busy ? 'Saving…' : editingId ? 'Save changes as draft' : 'Save content draft'}</Text>
+      {workspace === 'all' && !focusedFundingStatus ? (
+        <>
+          <Text style={styles.managementSubheading}>Opportunity overview</Text>
+          <View style={styles.fundingStatusCards}>
+            {summaryCards.map((card) => (
+              <Pressable
+                key={card.title}
+                accessibilityRole="button"
+                onPress={() => {
+                  setFilter(card.filter);
+                  setCategoryFilter('All');
+                  setSearchText('');
+                }}
+                style={styles.fundingStatusCard}
+              >
+                <View style={styles.fundingStatusCopy}>
+                  <Text style={styles.managementTitle}>{card.title}</Text>
+                </View>
+                <Text style={styles.fundingStatusCount}>{card.count}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <SectionHeading
+            title={filter === 'All' || categoryFilter !== 'Bursaries & funding'
+              ? 'Review and publication history'
+              : `${filter} bursary & funding listings`}
+            count={visibleItems.length}
+          />
+          <TextInput accessibilityLabel="Search content submissions" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
+          <View style={styles.chipRow}>
+            {statusFilters.map((item) => <FilterChip key={item} label={item} selected={filter === item} onPress={() => setFilter(item)} />)}
+          </View>
+          <Text style={styles.filterLabel}>Filter by category</Text>
+          <View style={styles.chipRow}>
+            {['All', 'Bursaries & funding', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
+          </View>
+          <Text style={styles.filterLabel}>Submitted</Text>
+          <View style={styles.chipRow}>
+            {dateFilters.map((item) => <FilterChip key={item} label={item} selected={dateFilter === item} onPress={() => {
+              setDateFilter(item);
+              setSubmissionCutoff(item === 'All time' ? 0 : Date.now() - (item === 'Last 7 days' ? 7 : 30) * 86_400_000);
+            }} />)}
+          </View>
+        </>
+      ) : null}
+
+      {workspace === 'review' ? (
+        <>
+          <TextInput accessibilityLabel="Search submitted opportunities" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
+          <Text style={styles.filterLabel}>Review status</Text>
+          <View style={styles.chipRow}>
+            {['Review queue', ...statusFilters.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item))]
+              .map((item) => <FilterChip key={item} label={item} selected={filter === item} onPress={() => setFilter(item)} />)}
+          </View>
+          <Text style={styles.filterLabel}>Category</Text>
+          <View style={styles.chipRow}>
+            {['All', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
+          </View>
+        </>
+      ) : null}
+
+      {workspace === 'published' ? (
+        <>
+          <TextInput accessibilityLabel="Search published opportunities" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
+          <Text style={styles.filterLabel}>Category</Text>
+          <View style={styles.chipRow}>
+            {['All', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
+          </View>
+        </>
+      ) : null}
+
+      {focusedFundingStatus ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            setFocusedFundingStatus(null);
+            setFilter('All');
+            setCategoryFilter('All');
+            setSearchText('');
+            setDateFilter('All time');
+            setSubmissionCutoff(0);
+          }}
+          style={styles.fundingStatusBack}
+        >
+          <Ionicons name="arrow-back" size={16} color={palette.primary} />
+          <Text style={styles.clearText}>Back to bursary & funding statuses</Text>
         </Pressable>
-        {editingId ? (
-          <Pressable accessibilityRole="button" onPress={() => {
-            setEditingId('');
-            setTitle('');
-            setDescription('');
-            setOrganization('');
-            setLocation('');
-            setDeadline('');
-            setSourceName('');
-            setSourceUrl('');
-            setApplicationUrl('');
-            setSourceVerifiedAt('');
-            setRecordExpiresAt('');
-            setInstructions('');
-            setRequiredDocuments('');
-          }} style={styles.cancelEditButton}>
-            <Text style={styles.clearText}>Cancel editing</Text>
+      ) : null}
+      {workspace === 'all' ? <Text style={styles.managementSubheading}>Bursaries & funding</Text> : null}
+      {workspace !== 'all' ? (
+        <SectionHeading
+          title={workspace === 'review' ? 'Submissions awaiting review' : 'Published listings'}
+          count={visibleItems.length}
+        />
+      ) : focusedFundingStatus ? (
+        <Text style={styles.managementMeta}>{focusedFundingStatus} bursary & funding listings</Text>
+      ) : (
+        <>
+          {!showCreateForm ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShowCreateForm(true)}
+              style={styles.createContentCard}
+            >
+              <View style={styles.createContentIcon}>
+                <Ionicons name="add-circle-outline" size={24} color={palette.primary} />
+              </View>
+              <View style={styles.fundingStatusCopy}>
+                <Text style={styles.managementTitle}>Create New Opportunity</Text>
+                <Text style={styles.managementMeta}>Manage funding, bursaries, training programmes and agricultural opportunities.</Text>
+                <Text style={styles.createContentAction}>Create content →</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={palette.primary} />
+            </Pressable>
+          ) : null}
+          <Text style={styles.managementMeta}>Select a status card to view only its matching listings.</Text>
+          <View style={styles.fundingStatusCards}>
+            {fundingStatusCards.map((card) => (
+              <Pressable
+                key={card.filter}
+                accessibilityRole="button"
+                accessibilityState={{ selected: false }}
+                onPress={() => {
+                  setCategoryFilter('Bursaries & funding');
+                  setFilter(card.filter);
+                  setSearchText('');
+                  setDateFilter('All time');
+                  setSubmissionCutoff(0);
+                  setShowCreateForm(false);
+                  setFocusedFundingStatus(card.filter);
+                }}
+                style={styles.fundingStatusCard}
+              >
+                <View style={styles.fundingStatusCopy}>
+                  <Text style={styles.managementTitle}>{card.title}</Text>
+                  <Text style={styles.managementMeta}>{card.description}</Text>
+                </View>
+                <Text style={styles.fundingStatusCount}>{card.count}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+
+      {workspace === 'all' && !focusedFundingStatus && showCreateForm ? (
+      <View style={styles.managementCard}>
+        <View style={styles.createFormHeader}>
+          <Text style={styles.managementSubheading}>{editingId ? 'Edit opportunity draft' : 'Create an opportunity'}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close content form"
+            onPress={() => {
+              setShowCreateForm(false);
+              setConfirmSubmission(false);
+            }}
+            style={styles.closeCreateForm}
+          >
+            <Ionicons name="close" size={20} color={palette.muted} />
           </Pressable>
+        </View>
+        <Text style={styles.managementMeta}>Step {formStep + 1} of {formSteps.length} · {formSteps[formStep]}</Text>
+        <View accessibilityRole="progressbar" accessibilityValue={{ min: 1, max: formSteps.length, now: formStep + 1 }} style={{ flexDirection: 'row', gap: 4, marginTop: spacing.sm }}>
+          {formSteps.map((step, index) => (
+            <View key={step} style={{ flex: 1, height: 4, borderRadius: 2, backgroundColor: index <= formStep ? palette.primary : palette.border }} />
+          ))}
+        </View>
+
+        {formStep === 0 ? (
+          <>
+            <TextInput accessibilityLabel="Opportunity title" value={title} onChangeText={setTitle} placeholder="Opportunity title *" style={styles.managementInput} maxLength={120} />
+            <Text style={styles.filterLabel}>Opportunity category *</Text>
+            <View style={styles.chipRow}>
+              {contentCategories.map((item) => <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />)}
+            </View>
+            <Text style={styles.filterLabel}>Primary eligible audience *</Text>
+            <View style={styles.chipRow}>
+              {audiences.map((item) => <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />)}
+              <FilterChip label="All eligible users" selected={audience === '*'} onPress={() => setAudience('*')} />
+            </View>
+            <TextInput accessibilityLabel="Organisation or institution" value={organization} onChangeText={setOrganization} placeholder="Organisation or institution *" style={styles.managementInput} maxLength={160} />
+            <TextInput accessibilityLabel="Opportunity location" value={location} onChangeText={setLocation} placeholder="Province or location *" style={styles.managementInput} maxLength={120} />
+            <TextInput accessibilityLabel="Opportunity description" value={description} onChangeText={setDescription} placeholder="Opportunity description *" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={2000} />
+          </>
+        ) : null}
+
+        {formStep === 1 ? (
+          <>
+            <Text style={styles.sectionHint}>Complete the fields relevant to this category. Funding amounts are in South African Rand (ZAR).</Text>
+            {(administratorDetailFields[category] || []).map((field) => (
+              <TextInput
+                key={field.key}
+                accessibilityLabel={field.label}
+                value={opportunityDetails[field.key] || ''}
+                onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, [field.key]: value }))}
+                placeholder={field.label}
+                style={styles.managementInput}
+                maxLength={1000}
+                keyboardType={/amount|value|stipend|positions/.test(field.key) ? 'decimal-pad' : 'default'}
+              />
+            ))}
+            {category === 'Funding' || category === 'Grants' ? (
+              <>
+                <TextInput accessibilityLabel="Co-funding requirement" value={opportunityDetails.coFundingRequirement || ''} onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, coFundingRequirement: value }))} placeholder="Co-funding requirement (Yes / No)" style={styles.managementInput} />
+                <TextInput accessibilityLabel="Repayment requirement" value={opportunityDetails.repaymentRequirement || ''} onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, repaymentRequirement: value }))} placeholder="Repayment requirement (Yes / No / Not applicable)" style={styles.managementInput} />
+                <TextInput accessibilityLabel="Funding conditions" value={opportunityDetails.fundingConditions || ''} onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, fundingConditions: value }))} placeholder="Funding conditions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
+              </>
+            ) : null}
+            {category === 'Bursary' ? (
+              <TextInput accessibilityLabel="Additional bursary conditions" value={opportunityDetails.bursaryConditions || ''} onChangeText={(value) => setOpportunityDetails((current) => ({ ...current, bursaryConditions: value }))} placeholder="Renewal and additional bursary conditions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
+            ) : null}
+            {!administratorDetailFields[category] ? <Text style={styles.managementMeta}>Add category details in the opportunity description and eligibility section.</Text> : null}
+          </>
+        ) : null}
+
+        {formStep === 2 ? (
+          <>
+            <Text style={styles.sectionHint}>List clear, fair eligibility requirements. Leave optional items blank if they do not apply.</Text>
+            <TextInput accessibilityLabel="Eligible provinces" value={eligibilityCriteria.provinces || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, provinces: value }))} placeholder="Eligible provinces (comma-separated)" style={styles.managementInput} maxLength={500} />
+            <TextInput accessibilityLabel="Eligible municipalities" value={eligibilityCriteria.municipalities || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, municipalities: value }))} placeholder="Eligible municipalities (optional)" style={styles.managementInput} maxLength={500} />
+            <TextInput accessibilityLabel="Minimum age" value={eligibilityCriteria.minimumAge || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, minimumAge: value }))} placeholder="Minimum age (optional)" style={styles.managementInput} keyboardType="number-pad" />
+            <TextInput accessibilityLabel="Maximum age" value={eligibilityCriteria.maximumAge || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, maximumAge: value }))} placeholder="Maximum age (optional)" style={styles.managementInput} keyboardType="number-pad" />
+            <TextInput accessibilityLabel="Minimum qualification" value={eligibilityCriteria.minimumQualification || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, minimumQualification: value }))} placeholder="Minimum qualification" style={styles.managementInput} maxLength={500} />
+            <TextInput accessibilityLabel="Agricultural sector" value={eligibilityCriteria.sector || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, sector: value }))} placeholder="Agricultural sector" style={styles.managementInput} maxLength={500} />
+            <TextInput accessibilityLabel="Employment status" value={eligibilityCriteria.employmentStatus || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, employmentStatus: value }))} placeholder="Employment status" style={styles.managementInput} maxLength={200} />
+            <TextInput accessibilityLabel="Additional eligibility conditions" value={eligibilityCriteria.additionalConditions || ''} onChangeText={(value) => setEligibilityCriteria((current) => ({ ...current, additionalConditions: value }))} placeholder="Additional eligibility conditions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
+          </>
+        ) : null}
+
+        {formStep === 3 ? (
+          <>
+            <TextInput accessibilityLabel="Application opening date" value={applicationOpeningDate} onChangeText={setApplicationOpeningDate} placeholder="Application opening date (YYYY-MM-DD) *" style={styles.managementInput} maxLength={10} />
+            <TextInput accessibilityLabel="Application closing date" value={deadline} onChangeText={setDeadline} placeholder="Application closing date (YYYY-MM-DD) *" style={styles.managementInput} maxLength={10} />
+            <TextInput accessibilityLabel="Maximum applications" value={maximumApplications} onChangeText={setMaximumApplications} placeholder="Maximum number of applications (optional)" style={styles.managementInput} keyboardType="number-pad" />
+            <TextInput accessibilityLabel="Application instructions" value={instructions} onChangeText={setInstructions} placeholder="Application instructions *" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
+            <Text style={styles.filterLabel}>Information requested from applicants</Text>
+            <View style={styles.chipRow}>
+              {applicationInformationOptions.map((item) => (
+                <FilterChip
+                  key={item}
+                  label={item}
+                  selected={applicationInformation.includes(item)}
+                  onPress={() => setApplicationInformation((current) =>
+                    current.includes(item) ? current.filter((entry) => entry !== item) : [...current, item]
+                  )}
+                />
+              ))}
+            </View>
+            <TextInput accessibilityLabel="Application terms and conditions" value={applicationTerms} onChangeText={setApplicationTerms} placeholder="Application terms and conditions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={5000} />
+            <Text style={styles.filterLabel}>Custom application questions</Text>
+            {applicationQuestions.map((question, index) => (
+              <View key={`question-${index}`} style={styles.managementCard}>
+                <TextInput accessibilityLabel={`Question ${index + 1} title`} value={question.title} onChangeText={(value) => updateApplicationQuestion(index, { title: value })} placeholder="Question title *" style={styles.managementInput} maxLength={240} />
+                <TextInput accessibilityLabel={`Question ${index + 1} help text`} value={question.description} onChangeText={(value) => updateApplicationQuestion(index, { description: value })} placeholder="Help text (optional)" style={styles.managementInput} maxLength={500} />
+                <View style={styles.chipRow}>
+                  {['Short Text', 'Long Text', 'Dropdown', 'Multiple Choice', 'Checkboxes', 'Date', 'Number'].map((type) => (
+                    <FilterChip key={type} label={type} selected={question.type === type} onPress={() => updateApplicationQuestion(index, { type })} />
+                  ))}
+                </View>
+                {['Dropdown', 'Multiple Choice', 'Checkboxes'].includes(question.type) ? (
+                  <TextInput accessibilityLabel={`Question ${index + 1} answer choices`} value={question.options.join(', ')} onChangeText={(value) => updateApplicationQuestion(index, { options: value.split(',').map((option) => option.trim()).filter(Boolean) })} placeholder="Answer choices, separated by commas (at least 2)" style={styles.managementInput} maxLength={1000} />
+                ) : null}
+                <FilterChip label={question.required ? 'Required' : 'Optional'} selected={question.required} onPress={() => updateApplicationQuestion(index, { required: !question.required })} />
+                <Pressable accessibilityRole="button" onPress={() => setApplicationQuestions((current) => current.filter((_, questionIndex) => questionIndex !== index))} style={styles.cancelEditButton}>
+                  <Text style={styles.clearText}>Remove question</Text>
+                </Pressable>
+              </View>
+            ))}
+            <Pressable accessibilityRole="button" onPress={addApplicationQuestion} style={[styles.managementButton, styles.secondaryManagementButton]}>
+              <Text style={styles.secondaryManagementText}>Add a question</Text>
+            </Pressable>
+          </>
+        ) : null}
+
+        {formStep === 4 ? (
+          <>
+            <TextInput accessibilityLabel="Required application documents" value={requiredDocuments} onChangeText={setRequiredDocuments} placeholder="Required documents (one per line)" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={804} />
+            <Text style={styles.managementMeta}>Use only documents that are necessary for this opportunity. Do not request identity, passport, bank, health, or biometric documents. Applicants can upload PDF, JPG, or PNG files up to 2 MB each.</Text>
+          </>
+        ) : null}
+
+        {formStep === 5 ? (
+          <>
+            <Text style={styles.sectionHint}>Provide a reliable public source and configure review settings. Source details support review but do not independently verify official status or eligibility.</Text>
+            <TextInput accessibilityLabel="Information source name" value={sourceName} onChangeText={setSourceName} placeholder="Information source name *" style={styles.managementInput} maxLength={160} />
+            <TextInput accessibilityLabel="Information source URL" value={sourceUrl} onChangeText={setSourceUrl} placeholder="Source URL (https://...) *" style={styles.managementInput} maxLength={500} autoCapitalize="none" keyboardType="url" />
+            <TextInput accessibilityLabel="External application URL" value={applicationUrl} onChangeText={setApplicationUrl} placeholder="Official application page URL (optional)" style={styles.managementInput} maxLength={500} autoCapitalize="none" keyboardType="url" />
+            <TextInput accessibilityLabel="Source checked date" value={sourceVerifiedAt} onChangeText={setSourceVerifiedAt} placeholder="Source checked (YYYY-MM-DD) *" style={styles.managementInput} maxLength={10} />
+            <TextInput accessibilityLabel="Listing expiry date" value={recordExpiresAt} onChangeText={setRecordExpiresAt} placeholder="Listing expires (YYYY-MM-DD) *" style={styles.managementInput} maxLength={10} />
+            <TextInput accessibilityLabel="Reviewing department" value={reviewDepartment} onChangeText={setReviewDepartment} placeholder="Reviewing department" style={styles.managementInput} maxLength={160} />
+            <TextInput accessibilityLabel="Review instructions" value={reviewInstructions} onChangeText={setReviewInstructions} placeholder="Reviewer instructions" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
+            <View style={styles.chipRow}>
+              <FilterChip label="Allow draft applications" selected={allowSaveAsDraft} onPress={() => setAllowSaveAsDraft((value) => !value)} />
+              <FilterChip label="Allow edits before closing" selected={allowEditsBeforeClosing} onPress={() => setAllowEditsBeforeClosing((value) => !value)} />
+              <FilterChip label="Allow withdrawal" selected={allowWithdrawal} onPress={() => setAllowWithdrawal((value) => !value)} />
+              <FilterChip label="Application references" selected={enableReferenceNumbers} onPress={() => setEnableReferenceNumbers((value) => !value)} />
+              <FilterChip label="Status tracking" selected={enableStatusTracking} onPress={() => setEnableStatusTracking((value) => !value)} />
+            </View>
+            <Text style={styles.managementMeta}>Applications after the closing date are disabled by default. Only an authorised administrator can approve and publish this opportunity.</Text>
+          </>
+        ) : null}
+
+        {formStep === 6 ? (
+          <View style={styles.managementCard}>
+            <Text style={styles.managementTitle}>{title || 'Opportunity title'}</Text>
+            <Text style={styles.managementMeta}>{category} · {organization || 'Organisation'} · {audiences.find((entry) => entry.value === audience)?.label || 'Eligible users'}</Text>
+            <Text style={styles.managementMeta}>Location: {location || 'Not provided'} · Deadline: {deadline || 'Not provided'}</Text>
+            <Text style={styles.description}>{description || 'Opportunity description'}</Text>
+            {Object.entries(opportunityDetails).filter(([, value]) => value.trim()).map(([key, value]) => (
+              <Text key={key} style={styles.managementMeta}>{key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}: {value}</Text>
+            ))}
+            {Object.entries(eligibilityCriteria).filter(([, value]) => value.trim()).map(([key, value]) => (
+              <Text key={key} style={styles.managementMeta}>{key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}: {value}</Text>
+            ))}
+            <Text style={styles.managementMeta}>Application opens: {applicationOpeningDate || 'Not specified'}</Text>
+            <Text style={styles.managementMeta}>Application instructions: {instructions || 'Not provided'}</Text>
+            <Text style={styles.managementMeta}>Required documents: {requiredDocuments.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).join(', ') || 'None specified'}</Text>
+            <Text style={styles.managementMeta}>Custom questions: {applicationQuestions.length}</Text>
+            <Text style={styles.managementMeta}>Source: {sourceName || 'Not provided'}{sourceUrl ? ` · ${sourceUrl}` : ''}</Text>
+          </View>
+        ) : null}
+
+        <View style={styles.managementActions}>
+          {formStep > 0 ? (
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => setFormStep((step) => Math.max(0, step - 1))} style={[styles.managementButton, styles.secondaryManagementButton]}>
+              <Text style={styles.secondaryManagementText}>Previous</Text>
+            </Pressable>
+          ) : null}
+          {formStep < formSteps.length - 1 ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                if (formStep === 0 && (!title.trim() || !description.trim())) {
+                  setError('Opportunity title and description are required to continue.');
+                  return;
+                }
+                setError('');
+                setFormStep((step) => Math.min(formSteps.length - 1, step + 1));
+              }}
+              style={styles.managementButton}
+            >
+              <Text style={styles.managementButtonText}>Continue</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Pressable accessibilityRole="button" disabled={busy} onPress={() => void createDraft()} style={[styles.managementButton, styles.secondaryManagementButton, busy && styles.managementDisabled]}>
+                <Text style={styles.secondaryManagementText}>{busy ? 'Saving…' : 'Save as draft'}</Text>
+              </Pressable>
+              {!editingId ? (
+                <Pressable accessibilityRole="button" disabled={busy} onPress={() => setConfirmSubmission(true)} style={[styles.managementButton, busy && styles.managementDisabled]}>
+                  <Text style={styles.managementButtonText}>Submit for approval</Text>
+                </Pressable>
+              ) : null}
+            </>
+          )}
+        </View>
+        {confirmSubmission && !editingId ? (
+          <View style={styles.managementCard}>
+            <Text style={styles.managementTitle}>Submit this opportunity for approval?</Text>
+            <Text style={styles.managementMeta}>The listing will not be visible to applicants until it is approved and published. Check dates, source details, eligibility and documents first.</Text>
+            <View style={styles.managementActions}>
+              <Pressable accessibilityRole="button" disabled={busy} onPress={() => setConfirmSubmission(false)} style={[styles.managementButton, styles.secondaryManagementButton]}>
+                <Text style={styles.secondaryManagementText}>Cancel</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" disabled={busy} onPress={() => void createDraft('approve')} style={[styles.managementButton, busy && styles.managementDisabled]}>
+                <Text style={styles.managementButtonText}>{busy ? 'Submitting…' : 'Confirm submission'}</Text>
+              </Pressable>
+            </View>
+          </View>
         ) : null}
       </View>
+      ) : null}
 
-      <Text style={styles.managementSubheading}>Review and publication history</Text>
-      <TextInput accessibilityLabel="Search content submissions" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
-      <View style={styles.chipRow}>
-        {statusFilters.map((item) => <FilterChip key={item} label={item} selected={filter === item} onPress={() => setFilter(item)} />)}
-      </View>
-      <Text style={styles.filterLabel}>Filter by category</Text>
-      <View style={styles.chipRow}>
-        {['All', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
-      </View>
-      <Text style={styles.filterLabel}>Submitted</Text>
-      <View style={styles.chipRow}>
-        {dateFilters.map((item) => <FilterChip key={item} label={item} selected={dateFilter === item} onPress={() => {
-          setDateFilter(item);
-          setSubmissionCutoff(item === 'All time' ? 0 : Date.now() - (item === 'Last 7 days' ? 7 : 30) * 86_400_000);
-        }} />)}
-      </View>
-      {visibleItems.length ? visibleItems.map((item) => {
+      {focusedFundingStatus ? (
+        <SectionHeading title={`${focusedFundingStatus} listings`} count={visibleItems.length} />
+      ) : null}
+      {hasReviewFilter && visibleItems.length === 0 ? (
+        <Text style={styles.managementMeta}>
+          {workspace === 'review'
+            ? 'There are no submitted opportunities or programmes in this review queue.'
+            : workspace === 'published'
+              ? 'There are no published opportunities matching these filters.'
+              : 'No opportunities match the selected filters.'}
+        </Text>
+      ) : null}
+      {hasReviewFilter && visibleItems.length ? visibleItems.map((item) => {
         const actions = ['Pending Approval', 'Pending Review', 'Changes Requested', 'Draft'].includes(item.status)
           ? ['approve', 'request_changes', 'reject']
           : item.status === 'Approved'
@@ -1481,6 +2522,42 @@ function AdministratorOpportunityManagement() {
             <Text style={styles.managementTitle}>{item.title}</Text>
             <Text style={styles.managementMeta}>{item.organization || 'Organisation not provided'} · {item.category} · {roleLabel(item.role)}</Text>
             <Text style={styles.managementMeta}>Status: {item.effectiveStatus || item.status}{item.submittedAt ? ` · Submitted ${formatDate(item.submittedAt.slice(0, 10))}` : ''}</Text>
+            {item.status === 'Published' && isBursaryFundingOpportunity(item) ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: Boolean(applicationsByOpportunity[item.id]) }}
+                  disabled={Boolean(applicationLoadingId && applicationLoadingId !== item.id)}
+                  onPress={() => void toggleOpportunityApplications(item)}
+                  style={[styles.managementButton, styles.secondaryManagementButton, styles.applicationToggle]}
+                >
+                  <Text style={styles.secondaryManagementText}>
+                    {applicationLoadingId === item.id
+                      ? 'Loading applications…'
+                      : applicationsByOpportunity[item.id]
+                        ? 'Hide applicants'
+                        : `View applications (${item.applicationCount ?? 0})`}
+                  </Text>
+                </Pressable>
+                {applicationErrors[item.id] ? <Text accessibilityRole="alert" style={styles.managementError}>{applicationErrors[item.id]}</Text> : null}
+                {applicationsByOpportunity[item.id] ? (
+                  <View style={styles.applicationList}>
+                    {applicationsByOpportunity[item.id].length ? applicationsByOpportunity[item.id].map((application) => (
+                      <View key={application.id} style={styles.applicationRow}>
+                        <View style={styles.fundingStatusCopy}>
+                          <Text style={styles.managementTitle}>{application.applicantName}</Text>
+                          <Text style={styles.managementMeta}>{application.reference}</Text>
+                        </View>
+                        <View style={styles.applicationStatus}>
+                          <Text style={styles.applicationStatusText}>{application.status}</Text>
+                          {application.submittedAt ? <Text style={styles.managementMeta}>{formatDate(application.submittedAt.slice(0, 10))}</Text> : null}
+                        </View>
+                      </View>
+                    )) : <Text style={styles.managementMeta}>No one has applied to this published listing yet.</Text>}
+                  </View>
+                ) : null}
+              </>
+            ) : null}
             {item.sourceName ? (
               <Text style={styles.managementMeta}>
                 Source: {item.sourceName} · Checked {item.sourceVerifiedAt || 'date unavailable'} · Expires {item.recordExpiresAt || 'not set'} · {item.sourceUrl}
@@ -1546,7 +2623,13 @@ function AdministratorOpportunityManagement() {
             </View>
           </View>
         );
-      }) : <EmptyState text="No opportunity submissions match this filter." />}
+      }) : hasReviewFilter ? <EmptyState text={
+        categoryFilter === 'Bursaries & funding' && filter !== 'All'
+          ? `No ${filter.toLowerCase()} bursary or funding listings.`
+          : 'No opportunity submissions match this filter.'
+      } /> : (
+        <Text style={styles.managementMeta}>Choose a status card or apply a filter to view listings.</Text>
+      )}
     </View>
   );
 }
@@ -1604,150 +2687,6 @@ function OpportunityDocumentButton({
   );
 }
 
-type DiscoverableCandidate = {
-  id: string;
-  firstName: string;
-  desiredRole: string;
-  province: string;
-  summary: string;
-  skills: { name: string; category: string; level: string; verificationStatus: string }[];
-};
-
-function EmployerCandidateDiscovery() {
-  const [candidates, setCandidates] = useState<DiscoverableCandidate[]>([]);
-  const [listings, setListings] = useState<{ id: string; title: string; category: string; status: string; effectiveStatus: string }[]>([]);
-  const [search, setSearch] = useState('');
-  const [selectedListingId, setSelectedListingId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState('');
-  const [error, setError] = useState('');
-  const [listingError, setListingError] = useState('');
-  const [message, setMessage] = useState('');
-  const [reload, setReload] = useState(0);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch<{ opportunities: { id: string; title: string; category: string; status: string; effectiveStatus: string }[] }>('/employer/opportunities')
-      .then(({ opportunities }) => {
-        if (active) {
-          setListings(opportunities.filter((entry) =>
-            entry.effectiveStatus === 'Open' && ['Employment', 'Internship', 'Workplace Opportunity'].includes(entry.category)
-          ));
-          setListingError('');
-        }
-      })
-      .catch((cause: unknown) => {
-        if (active) setListingError(cause instanceof Error ? cause.message : 'Your published job listings could not be loaded.');
-      });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const timer = setTimeout(() => {
-      setLoading(true);
-      const query = search.trim() ? `?q=${encodeURIComponent(search.trim())}` : '';
-      apiFetch<{ candidates: DiscoverableCandidate[] }>(`/employer/candidates${query}`)
-        .then(({ candidates: result }) => {
-          if (active) {
-            setCandidates(result);
-            setError('');
-          }
-        })
-        .catch((cause: unknown) => {
-          if (active) setError(cause instanceof Error ? cause.message : 'Opted-in candidates could not be loaded.');
-        })
-        .finally(() => {
-          if (active) setLoading(false);
-        });
-    }, 250);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [search, reload]);
-
-  const invite = async (candidate: DiscoverableCandidate) => {
-    if (!selectedListingId || busy) return;
-    setBusy(candidate.id);
-    setError('');
-    setMessage('');
-    try {
-      await apiFetch(`/employer/candidates/${encodeURIComponent(candidate.id)}/invitations`, {
-        method: 'POST',
-        body: JSON.stringify({ opportunityId: selectedListingId }),
-      });
-      setMessage(`Invitation sent to ${candidate.firstName}. They can choose whether to apply.`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The invitation could not be sent.');
-    } finally {
-      setBusy('');
-    }
-  };
-
-  return (
-    <View style={styles.managementPanel}>
-      <SectionHeading title="Discover candidates" count={candidates.length} />
-      <Text style={styles.sectionHint}>
-        Search only candidates who chose to share a limited profile. Names are limited to first name; contact details and documents are not shown. Skills are self-reported, not verified. Invitations are in-app and candidates decide whether to apply.
-      </Text>
-      <TextInput
-        accessibilityLabel="Search opted-in candidates"
-        value={search}
-        onChangeText={setSearch}
-        placeholder="Search role, province, skills, or experience"
-        style={styles.managementInput}
-      />
-      <Text style={styles.managementMeta}>Choose one of your open, published job listings to invite candidates to consider.</Text>
-      {listings.length ? (
-        <View style={styles.managementActions}>
-          {listings.map((listing) => (
-            <Pressable
-              key={listing.id}
-              accessibilityRole="button"
-              accessibilityState={{ selected: selectedListingId === listing.id }}
-              onPress={() => setSelectedListingId(listing.id)}
-              style={[styles.managementButton, styles.secondaryManagementButton, selectedListingId === listing.id && styles.candidateListingSelected]}
-            >
-              <Text style={styles.secondaryManagementText}>{listing.title}</Text>
-            </Pressable>
-          ))}
-        </View>
-      ) : <Text style={styles.managementMeta}>No published job, internship, or workplace listings are available to invite candidates to.</Text>}
-      {listingError ? <Text accessibilityRole="alert" style={styles.managementError}>{listingError}</Text> : null}
-      <Pressable accessibilityRole="button" onPress={() => setReload((value) => value + 1)} style={styles.summaryLink}>
-        <Text style={styles.summaryLinkText}>Refresh candidate search</Text>
-      </Pressable>
-      {error ? <Text accessibilityRole="alert" style={styles.managementError}>{error}</Text> : null}
-      {message ? <Text accessibilityRole="alert" style={styles.managementMessage}>{message}</Text> : null}
-      {loading ? <ActivityIndicator size="small" color={palette.primary} style={styles.loading} /> : null}
-      {!loading && candidates.length === 0 ? (
-        <EmptyState text={search.trim() ? 'No opted-in candidates match this search.' : 'No candidates have chosen to share their profiles yet.'} />
-      ) : null}
-      {candidates.map((candidate) => (
-        <View key={candidate.id} style={styles.managementCard}>
-          <Text style={styles.managementTitle}>{candidate.firstName}</Text>
-          <Text style={styles.managementMeta}>{candidate.desiredRole}{candidate.province ? ` · ${candidate.province}` : ''}</Text>
-          {candidate.summary ? <Text style={styles.description}>{candidate.summary}</Text> : null}
-          {candidate.skills.length ? (
-            <Text style={styles.managementMeta}>
-              Skills: {candidate.skills.map((skill) => `${skill.name} (${skill.level}, self-reported)`).join(' · ')}
-            </Text>
-          ) : <Text style={styles.managementMeta}>No Skills Passport skills shared.</Text>}
-          <Pressable
-            accessibilityRole="button"
-            disabled={!selectedListingId || Boolean(busy)}
-            onPress={() => void invite(candidate)}
-            style={[styles.managementButton, (!selectedListingId || Boolean(busy)) && styles.managementDisabled]}
-          >
-            <Text style={styles.managementButtonText}>{busy === candidate.id ? 'Sending invitation…' : 'Invite to apply'}</Text>
-          </Pressable>
-        </View>
-      ))}
-    </View>
-  );
-}
-
 function EmployerFundingSupport() {
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(false);
@@ -1775,7 +2714,7 @@ function EmployerFundingSupport() {
         onPress={() => void openOfficialInformation()}
         style={[styles.managementButton, opening && styles.managementDisabled]}
       >
-        <Text style={styles.managementButtonText}>{opening ? 'Opening official page…' : 'Open AgriSETA grants and WSP/ATR information'}</Text>
+        <Text style={styles.managementButtonText}>{opening ? 'Opening official page…' : 'Open AgriSETA employer funding information'}</Text>
       </Pressable>
       {error ? <Text accessibilityRole="alert" style={styles.managementError}>{error}</Text> : null}
       <Text style={styles.managementMeta}>Official source: agriseta.co.za · Confirm application dates and employer eligibility on the source page.</Text>
@@ -1824,11 +2763,47 @@ const styles = StyleSheet.create({
   modeButtonSelected: { backgroundColor: palette.primary, borderColor: palette.primary },
   modeText: { color: palette.primary, fontSize: 12, fontWeight: '700' },
   modeTextSelected: { color: '#FFFFFF' },
-  managementPanel: { backgroundColor: palette.surfaceAlt, borderRadius: radius.lg, padding: spacing.md, marginBottom: spacing.lg },
-  managementCard: { backgroundColor: palette.surface, borderRadius: radius.md, padding: spacing.md, marginTop: spacing.sm },
+  managementPanel: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#E2EAE4',
+    shadowColor: '#10291F',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  managementCard: {
+    backgroundColor: palette.surfaceAlt,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.sm,
+    borderWidth: 1,
+    borderColor: '#E2EAE4',
+  },
+  fundingStatusCards: { gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.md },
+  fundingStatusBack: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: spacing.xs, paddingVertical: spacing.sm },
+  fundingStatusCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: radius.md, padding: spacing.md },
+  fundingStatusCardSelected: { borderColor: palette.primary, backgroundColor: '#E6F3EB' },
+  fundingStatusCopy: { flex: 1 },
+  applicationToggle: { flexGrow: 0, marginTop: spacing.sm },
+  applicationList: { backgroundColor: palette.surfaceAlt, borderRadius: radius.sm, paddingHorizontal: spacing.sm, marginTop: spacing.sm },
+  applicationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, borderBottomWidth: 1, borderBottomColor: palette.border, paddingVertical: spacing.sm },
+  applicationStatus: { alignItems: 'flex-end' },
+  applicationStatusText: { color: palette.primaryDark, fontSize: 11, fontWeight: '800' },
+  fundingStatusCount: { color: palette.primaryDark, fontSize: 24, fontWeight: '800' },
+  createContentCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: radius.md, padding: spacing.md, marginTop: spacing.sm },
+  createContentIcon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 21, backgroundColor: '#E6F3EB' },
+  createContentAction: { color: palette.primary, fontSize: 12, fontWeight: '800', marginTop: spacing.sm },
+  createFormHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  closeCreateForm: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm },
   managementSubheading: { color: palette.text, fontSize: 15, fontWeight: '800', marginTop: spacing.md, marginBottom: spacing.xs },
   managementTitle: { color: palette.text, fontSize: 15, fontWeight: '800' },
   managementMeta: { color: palette.muted, fontSize: 11, lineHeight: 16, marginTop: spacing.xs },
+  schedulePanel: { padding: spacing.sm, marginTop: spacing.md, backgroundColor: palette.surfaceAlt, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border },
   managementInput: { minHeight: 42, borderWidth: 1, borderColor: palette.border, borderRadius: radius.sm, backgroundColor: palette.surface, color: palette.text, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginTop: spacing.sm },
   managementMultiline: { minHeight: 76, textAlignVertical: 'top' },
   managementActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
@@ -1844,7 +2819,6 @@ const styles = StyleSheet.create({
   managementButtonText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
   secondaryManagementText: { color: palette.primary, fontSize: 11, fontWeight: '800' },
   managementDisabled: { opacity: 0.6 },
-  candidateListingSelected: { backgroundColor: '#E6F3EB', borderColor: palette.primaryDark },
   managementError: { color: palette.danger, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
   managementMessage: { color: palette.primaryDark, backgroundColor: '#E6F3EB', borderRadius: radius.sm, fontSize: 12, lineHeight: 18, padding: spacing.sm, marginTop: spacing.sm },
   cancelEditButton: { alignSelf: 'flex-end', paddingVertical: spacing.sm },

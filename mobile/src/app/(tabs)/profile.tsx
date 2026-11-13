@@ -18,7 +18,7 @@ type Profile = {
   phone: string;
   organization: string;
   farmProfile?: { farmName: string; province: string };
-  candidateProfile?: { visible: boolean; desiredRole: string; province: string; summary: string };
+  candidateProfile?: { visible: boolean; passportVisible: boolean; desiredRole: string; province: string; summary: string };
   activeRole: AppRole;
   roles: AppRole[];
   status: 'active' | 'inactive';
@@ -66,6 +66,7 @@ export default function ProfileScreen() {
   const [farmName, setFarmName] = useState('');
   const [province, setProvince] = useState('');
   const [candidateVisible, setCandidateVisible] = useState(false);
+  const [candidatePassportVisible, setCandidatePassportVisible] = useState(false);
   const [candidateDesiredRole, setCandidateDesiredRole] = useState('');
   const [candidateProvince, setCandidateProvince] = useState('');
   const [candidateSummary, setCandidateSummary] = useState('');
@@ -83,6 +84,7 @@ export default function ProfileScreen() {
         setFarmName(user.farmProfile?.farmName || '');
         setProvince(user.farmProfile?.province || '');
         setCandidateVisible(user.candidateProfile?.visible || false);
+        setCandidatePassportVisible(user.candidateProfile?.passportVisible || false);
         setCandidateDesiredRole(user.candidateProfile?.desiredRole || '');
         setCandidateProvince(user.candidateProfile?.province || '');
         setCandidateSummary(user.candidateProfile?.summary || '');
@@ -103,10 +105,19 @@ export default function ProfileScreen() {
   }, [retry, session]);
 
   const handleLogout = async () => {
+    let logoutError: unknown;
     try {
       await logout();
+    } catch (error) {
+      logoutError = error;
     } finally {
       router.replace('/');
+    }
+    if (logoutError) {
+      Alert.alert(
+        'Sign-out warning',
+        'Sign-out could not be fully confirmed. The local session was cleared if storage was available, but the server may not have revoked the token. It may remain valid until it expires.'
+      );
     }
   };
 
@@ -119,6 +130,7 @@ export default function ProfileScreen() {
       setFarmName(profile.farmProfile?.farmName || '');
       setProvince(profile.farmProfile?.province || '');
       setCandidateVisible(profile.candidateProfile?.visible || false);
+      setCandidatePassportVisible(profile.candidateProfile?.passportVisible || false);
       setCandidateDesiredRole(profile.candidateProfile?.desiredRole || '');
       setCandidateProvince(profile.candidateProfile?.province || '');
       setCandidateSummary(profile.candidateProfile?.summary || '');
@@ -140,6 +152,7 @@ export default function ProfileScreen() {
           ...(profile.activeRole === 'farmer' ? { farmName, province } : {}),
           ...(['learner', 'farmer'].includes(profile.activeRole) ? {
             candidateVisible,
+            candidatePassportVisible: candidateVisible && candidatePassportVisible,
             candidateDesiredRole,
             candidateProvince,
             candidateSummary,
@@ -154,6 +167,7 @@ export default function ProfileScreen() {
       setFarmName(payload.user.farmProfile?.farmName || '');
       setProvince(payload.user.farmProfile?.province || '');
       setCandidateVisible(payload.user.candidateProfile?.visible || false);
+      setCandidatePassportVisible(payload.user.candidateProfile?.passportVisible || false);
       setCandidateDesiredRole(payload.user.candidateProfile?.desiredRole || '');
       setCandidateProvince(payload.user.candidateProfile?.province || '');
       setCandidateSummary(payload.user.candidateProfile?.summary || '');
@@ -348,6 +362,22 @@ export default function ProfileScreen() {
                     onValueChange={setCandidateVisible}
                     trackColor={{ false: '#C8D2CC', true: '#8AB89B' }}
                     thumbColor={candidateVisible ? palette.primary : '#F4F4F4'}
+                  />
+                </View>
+                <View style={styles.candidateVisibilityRow}>
+                  <View style={styles.candidateVisibilityCopy}>
+                    <Text style={styles.label}>Allow employers to view my Passport on my applications</Text>
+                    <Text style={styles.helpText}>
+                      This is separate from candidate search. Only employers reviewing your submitted applications to their own eligible opportunities can view your recorded skills and credentials. Access is logged. Turn this off at any time.
+                    </Text>
+                  </View>
+                  <Switch
+                    accessibilityLabel="Allow employers to view my Passport on my applications"
+                    value={candidatePassportVisible}
+                    onValueChange={setCandidatePassportVisible}
+                    disabled={!candidateVisible}
+                    trackColor={{ false: '#C8D2CC', true: '#8AB89B' }}
+                    thumbColor={candidatePassportVisible ? palette.primary : '#F4F4F4'}
                   />
                 </View>
                 <Text style={styles.label}>Desired job or opportunity</Text>

@@ -284,11 +284,17 @@ export default function ServiceScreen() {
               {service.id === 'svc-learn' ? (
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Open AgriLearn agricultural learning portal"
-                  onPress={() => router.push('/learning')}
+                  accessibilityLabel={session?.activeRole === 'administrator'
+                    ? 'Open AgriLearn learning administration'
+                    : 'Open AgriLearn agricultural learning portal'}
+                  onPress={() => router.push(session?.activeRole === 'administrator'
+                    ? { pathname: '/learning', params: { section: 'Learning administration' } }
+                    : '/learning')}
                   style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
                 >
-                  <Text style={styles.buttonText}>Explore AgriLearn</Text>
+                  <Text style={styles.buttonText}>
+                    {session?.activeRole === 'administrator' ? 'Manage learning programmes & materials' : 'Explore AgriLearn'}
+                  </Text>
                 </Pressable>
               ) : null}
               {service.id !== 'svc-learn' && applicationCheckError?.serviceId === serviceId ? (

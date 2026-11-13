@@ -21,8 +21,18 @@ export type ApplicationSubmission = {
     phone: string;
     motivation: string;
     consent: true;
+    answers: (string | string[])[];
+    additionalInformation: Record<string, string>;
   };
   documents: ApplicationDocumentUpload[];
+};
+
+type CustomQuestion = {
+  title: string;
+  type: string;
+  required: boolean;
+  description: string;
+  options: string[];
 };
 
 const maxFileSize = 2 * 1024 * 1024;
@@ -33,6 +43,9 @@ export function ApplicationForm({
   initialEmail,
   initialPhone,
   requiredDocuments,
+  customQuestions = [],
+  requiredApplicantInformation = [],
+  applicationTermsAndConditions = '',
   busy,
   allowDraft = true,
   reviewerNotice = 'authorized platform reviewers',
@@ -42,6 +55,9 @@ export function ApplicationForm({
   initialEmail: string;
   initialPhone?: string;
   requiredDocuments: string[];
+  customQuestions?: CustomQuestion[];
+  requiredApplicantInformation?: string[];
+  applicationTermsAndConditions?: string;
   busy: boolean;
   allowDraft?: boolean;
   reviewerNotice?: string;
@@ -52,9 +68,33 @@ export function ApplicationForm({
   const [phone, setPhone] = useState(initialPhone || '');
   const [motivation, setMotivation] = useState('');
   const [documents, setDocuments] = useState<Record<string, ApplicationDocumentUpload>>({});
+  const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
+  const [additionalInformation, setAdditionalInformation] = useState<Record<string, string>>({});
   const [consent, setConsent] = useState(false);
   const [formError, setFormError] = useState('');
   const [pickingRequirement, setPickingRequirement] = useState('');
+  const hasAdditionalInformation = requiredApplicantInformation.some((field) =>
+    !['Personal information', 'Contact information', 'Motivation statement'].includes(field)
+  );
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const requiredInformationComplete = requiredApplicantInformation
+    .filter((field) => !['Personal information', 'Contact information', 'Motivation statement'].includes(field))
+    .every((field) => Boolean(additionalInformation[field]?.trim()));
+  const requiredQuestionsComplete = customQuestions.every((question, index) => {
+    if (!question.required) return true;
+    const answer = answers[index];
+    return Array.isArray(answer) ? answer.length > 0 : Boolean(answer?.trim());
+  });
+  const requiredDocumentsComplete = requiredDocuments.every((requirement) => Boolean(documents[requirement]));
+  const completionSteps = [
+    Boolean(fullName.trim()) && validEmail,
+    motivation.trim().length >= 10,
+    requiredInformationComplete && requiredQuestionsComplete,
+    requiredDocumentsComplete,
+    consent,
+  ];
+  const completedSteps = completionSteps.filter(Boolean).length;
+  const totalUploadSize = Object.values(documents).reduce((total, document) => total + document.size, 0);
 
   const selectDocument = async (requirement: string) => {
     if (pickingRequirement || busy) return;
@@ -113,13 +153,18 @@ export function ApplicationForm({
 
   const submit = async (draft: boolean) => {
     setFormError('');
-    if (!fullName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
-        motivation.trim().length < 10 || !consent) {
-      setFormError('Complete your name, valid email, motivation (at least 10 characters), and privacy confirmation.');
-      return;
-    }
+    const errors: string[] = [];
+    if (!fullName.trim()) errors.push('Enter your full name.');
+    if (!email.trim() || !validEmail) errors.push('Enter a valid email address.');
+    if (motivation.trim().length < 10) errors.push('Write a motivation of at least 10 characters.');
+    if (!consent) errors.push('Confirm the accuracy and sharing consent to continue.');
     if (requiredDocuments.some((requirement) => !documents[requirement])) {
-      setFormError('Upload a file for every required document before continuing.');
+      errors.push('Upload a file for every required document.');
+    }
+    if (!requiredQuestionsComplete) errors.push('Answer each required opportunity question.');
+    if (!requiredInformationComplete) errors.push('Complete each additional required information field.');
+    if (errors.length) {
+      setFormError(errors.join('\n'));
       return;
     }
     await onSubmit(draft, {
@@ -129,6 +174,12 @@ export function ApplicationForm({
         phone: phone.trim(),
         motivation: motivation.trim(),
         consent: true,
+        answers: customQuestions.map((question, index) =>
+          answers[index] ?? (question.type === 'Checkboxes' ? [] : '')
+        ),
+        additionalInformation: Object.fromEntries(requiredApplicantInformation
+          .filter((field) => !['Personal information', 'Contact information', 'Motivation statement'].includes(field))
+          .map((field) => [field, additionalInformation[field]?.trim() || ''])),
       },
       documents: requiredDocuments.map((requirement) => documents[requirement]),
     });
@@ -136,75 +187,244 @@ export function ApplicationForm({
 
   return (
     <View style={styles.form}>
-      <Text style={styles.title}>Application form</Text>
-      <Text style={styles.helper}>Complete these details for this application. Your email must match your signed-in account.</Text>
-      <TextInput
-        accessibilityLabel="Applicant full name"
-        value={fullName}
-        onChangeText={setFullName}
-        placeholder="Full name"
-        maxLength={160}
-        autoComplete="name"
-        style={styles.input}
-      />
-      <TextInput
-        accessibilityLabel="Application email"
-        value={email}
-        onChangeText={setEmail}
-        placeholder="Email address"
-        maxLength={160}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        autoComplete="email"
-        style={styles.input}
-      />
-      <TextInput
-        accessibilityLabel="Application phone number"
-        value={phone}
-        onChangeText={setPhone}
-        placeholder="Phone number (optional)"
-        maxLength={30}
-        keyboardType="phone-pad"
-        autoComplete="tel"
-        style={styles.input}
-      />
-      <TextInput
-        accessibilityLabel="Application motivation"
-        value={motivation}
-        onChangeText={setMotivation}
-        placeholder="Why are you applying? (10–1,000 characters)"
-        maxLength={1000}
-        multiline
-        textAlignVertical="top"
-        style={[styles.input, styles.multiline]}
-      />
-
-      <Text style={styles.title}>Required documents</Text>
-      {requiredDocuments.length ? requiredDocuments.map((requirement) => (
-        <View key={requirement} style={styles.documentRow}>
-          <View style={styles.documentText}>
-            <Text style={styles.requirement}>{requirement}</Text>
-            {documents[requirement] ? (
-              <Text style={styles.filename}>{documents[requirement].filename}</Text>
-            ) : <Text style={styles.filename}>No file selected</Text>}
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            disabled={busy || Boolean(pickingRequirement)}
-            onPress={() => void selectDocument(requirement)}
-            style={[styles.pickButton, (busy || Boolean(pickingRequirement)) && styles.disabled]}
-          >
-            {pickingRequirement === requirement
-              ? <ActivityIndicator size="small" color={palette.primary} />
-              : <Text style={styles.pickText}>{documents[requirement] ? 'Replace' : 'Choose file'}</Text>}
-          </Pressable>
+      <View style={styles.formHeader}>
+        <View style={styles.formHeaderIcon}>
+          <Ionicons name="document-text-outline" size={22} color={palette.primary} />
         </View>
-      )) : (
-        <Text style={styles.helper}>No documents are required for this listing.</Text>
-      )}
-      <Text style={styles.privacy}>
-        PDF, JPG, or PNG only; maximum 2 MB per file and 5 MB total. Files are stored with your application and made available only to you and authorized reviewers. Do not upload identity, passport, bank, health, or biometric documents.
-      </Text>
+        <View style={styles.formHeaderCopy}>
+          <Text style={styles.formTitle}>Application form</Text>
+          <Text style={styles.helper}>Complete the details below to submit your application. Your email must match your signed-in account.</Text>
+        </View>
+      </View>
+      <View style={styles.progressCard}>
+        <View style={styles.progressHeading}>
+          <Text style={styles.progressTitle}>Application checklist</Text>
+          <Text style={styles.progressCount}>{completedSteps} of {completionSteps.length} complete</Text>
+        </View>
+        <View
+          accessibilityRole="progressbar"
+          accessibilityLabel="Application completion"
+          accessibilityValue={{ min: 0, max: completionSteps.length, now: completedSteps }}
+          style={styles.progressTrack}
+        >
+          <View style={[styles.progressFill, { width: `${(completedSteps / completionSteps.length) * 100}%` }]} />
+        </View>
+        <Text style={styles.progressHint}>Required sections are marked with <Text style={styles.required}>*</Text>.</Text>
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeading}>
+          <SectionStatus number="1" complete={completionSteps[0]} />
+          <Text style={styles.title}>Your details</Text>
+        </View>
+        <Text style={styles.fieldLabel}>Full name <Text style={styles.required}>*</Text></Text>
+        <TextInput
+          accessibilityLabel="Applicant full name"
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="Enter your full name"
+          maxLength={160}
+          autoComplete="name"
+          style={styles.input}
+        />
+        <Text style={styles.fieldLabel}>Email address <Text style={styles.required}>*</Text></Text>
+        <TextInput
+          accessibilityLabel="Application email"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="name@example.co.za"
+          maxLength={160}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          style={styles.input}
+        />
+        <Text style={styles.fieldLabel}>Phone number <Text style={styles.optional}>(optional)</Text></Text>
+        <TextInput
+          accessibilityLabel="Application phone number"
+          value={phone}
+          onChangeText={setPhone}
+          placeholder="+27"
+          maxLength={30}
+          keyboardType="phone-pad"
+          autoComplete="tel"
+          style={styles.input}
+        />
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeading}>
+          <SectionStatus number="2" complete={completionSteps[1]} />
+          <Text style={styles.title}>Motivation</Text>
+        </View>
+        <Text style={styles.fieldLabel}>Why are you applying? <Text style={styles.required}>*</Text></Text>
+        <Text style={styles.helper}>Tell us why this opportunity is right for you (10–1,000 characters).</Text>
+        <TextInput
+          accessibilityLabel="Application motivation"
+          value={motivation}
+          onChangeText={setMotivation}
+          placeholder="Write your motivation"
+          maxLength={1000}
+          multiline
+          textAlignVertical="top"
+          style={[styles.input, styles.multiline]}
+        />
+        <Text style={styles.characterCount}>{motivation.length}/1,000 characters</Text>
+      </View>
+
+      {hasAdditionalInformation ? (
+        <View style={styles.section}>
+          <View style={styles.sectionHeading}>
+            <SectionStatus number="3" complete={completionSteps[2]} />
+            <Text style={styles.title}>Additional information</Text>
+          </View>
+          <Text style={styles.helper}>Please complete the following opportunity-specific fields.</Text>
+          {requiredApplicantInformation
+            .filter((field) => !['Personal information', 'Contact information', 'Motivation statement'].includes(field))
+            .map((field) => (
+              <View key={field}>
+                <Text style={styles.fieldLabel}>{field} <Text style={styles.required}>*</Text></Text>
+                <TextInput
+                  accessibilityLabel={field}
+                  value={additionalInformation[field] || ''}
+                  onChangeText={(value) => setAdditionalInformation((current) => ({ ...current, [field]: value }))}
+                  placeholder={`Enter ${field.toLowerCase()}`}
+                  maxLength={2000}
+                  multiline={['Project proposal', 'Funding budget', 'Agricultural experience'].includes(field)}
+                  textAlignVertical="top"
+                  style={[styles.input, ['Project proposal', 'Funding budget', 'Agricultural experience'].includes(field) && styles.multiline]}
+                />
+              </View>
+            ))}
+        </View>
+      ) : null}
+
+      {customQuestions.length ? (
+        <View style={styles.section}>
+          <View style={styles.sectionHeading}>
+            <SectionStatus number={hasAdditionalInformation ? '4' : '3'} complete={requiredQuestionsComplete} />
+            <Text style={styles.title}>Opportunity questions</Text>
+          </View>
+          <Text style={styles.helper}>Questions marked with * must be answered.</Text>
+          {customQuestions.map((question, index) => {
+            const answer = answers[index];
+            const selectedOptions = Array.isArray(answer) ? answer : [];
+            return (
+              <View key={`${question.title}-${index}`} style={styles.question}>
+                <Text style={styles.requirement}>{question.title}{question.required ? ' *' : ''}</Text>
+                {question.description ? <Text style={styles.helper}>{question.description}</Text> : null}
+                {['Dropdown', 'Multiple Choice', 'Checkboxes'].includes(question.type) ? (
+                  <View style={styles.questionOptions}>
+                    {question.options.map((option) => {
+                      const selected = question.type === 'Checkboxes'
+                        ? selectedOptions.includes(option)
+                        : answer === option;
+                      return (
+                        <Pressable
+                          key={option}
+                          accessibilityRole={question.type === 'Checkboxes' ? 'checkbox' : 'radio'}
+                          accessibilityState={{ checked: selected, selected }}
+                          onPress={() => setAnswers((current) => ({
+                            ...current,
+                            [index]: question.type === 'Checkboxes'
+                              ? selectedOptions.filter((value) => value !== option).concat(selected ? [] : [option])
+                              : selected ? '' : option,
+                          }))}
+                          style={[styles.option, selected && styles.optionSelected]}
+                        >
+                          <Text style={[styles.optionText, selected && styles.optionTextSelected]}>{option}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <TextInput
+                    accessibilityLabel={question.title}
+                    value={typeof answer === 'string' ? answer : ''}
+                    onChangeText={(value) => setAnswers((current) => ({ ...current, [index]: value }))}
+                    placeholder={question.type === 'Date' ? 'YYYY-MM-DD' : question.title}
+                    keyboardType={question.type === 'Number' ? 'decimal-pad' : 'default'}
+                    maxLength={2000}
+                    multiline={question.type === 'Long Text'}
+                    style={[styles.input, question.type === 'Long Text' && styles.multiline]}
+                  />
+                )}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+
+      {applicationTermsAndConditions ? (
+        <View style={styles.termsCard}>
+          <Ionicons name="information-circle-outline" size={19} color={palette.primary} />
+          <View style={styles.termsCopy}>
+            <Text style={styles.termsTitle}>Application terms</Text>
+            <Text style={styles.helper}>{applicationTermsAndConditions}</Text>
+          </View>
+        </View>
+      ) : null}
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeading}>
+          <SectionStatus number={String(3 + Number(hasAdditionalInformation) + Number(customQuestions.length > 0))} complete={completionSteps[3]} />
+          <View style={styles.sectionTitleCopy}>
+            <Text style={styles.title}>Supporting documents</Text>
+            <Text style={styles.helper}>{requiredDocuments.length
+              ? 'Upload each document requested for this opportunity.'
+              : 'No documents are required for this application.'}</Text>
+          </View>
+        </View>
+        {requiredDocuments.map((requirement) => (
+          <View key={requirement} style={styles.documentCard}>
+            <View style={styles.documentIcon}>
+              <Ionicons name={documents[requirement] ? 'checkmark-circle-outline' : 'document-attach-outline'} size={21} color={documents[requirement] ? palette.success : palette.primary} />
+            </View>
+            <View style={styles.documentText}>
+              <Text style={styles.requirement}>{requirement} <Text style={styles.required}>*</Text></Text>
+              <Text numberOfLines={2} style={styles.filename}>
+                {documents[requirement]
+                  ? `${documents[requirement].filename} · ${formatFileSize(documents[requirement].size)}`
+                  : 'PDF, JPG or PNG · 2 MB maximum'}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy || Boolean(pickingRequirement)}
+              onPress={() => void selectDocument(requirement)}
+              style={[styles.pickButton, (busy || Boolean(pickingRequirement)) && styles.disabled]}
+            >
+              {pickingRequirement === requirement
+                ? <ActivityIndicator size="small" color={palette.primary} />
+                : <Text style={styles.pickText}>{documents[requirement] ? 'Replace' : 'Upload'}</Text>}
+            </Pressable>
+            {documents[requirement] ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${requirement}`}
+                disabled={busy || Boolean(pickingRequirement)}
+                onPress={() => setDocuments((current) => {
+                  const next = { ...current };
+                  delete next[requirement];
+                  return next;
+                })}
+                style={styles.removeFileButton}
+              >
+                <Ionicons name="close-circle-outline" size={20} color={palette.danger} />
+              </Pressable>
+            ) : null}
+          </View>
+        ))}
+        {requiredDocuments.length ? (
+          <Text style={styles.uploadSummary}>Uploaded {formatFileSize(totalUploadSize)} of 5 MB total</Text>
+        ) : null}
+        <View style={styles.privacyCard}>
+          <Ionicons name="lock-closed-outline" size={17} color={palette.primaryDark} />
+          <Text style={styles.privacy}>
+            PDF, JPG, or PNG. Maximum 2 MB per file and 5 MB total. Files are shared only with you and {reviewerNotice}. Do not upload identity, passport, bank, health, or biometric documents.
+          </Text>
+        </View>
+      </View>
 
       <Pressable
         accessibilityRole="checkbox"
@@ -212,16 +432,22 @@ export function ApplicationForm({
         onPress={() => setConsent((current) => !current)}
         style={styles.consent}
       >
-        <Ionicons
-          name={consent ? 'checkbox' : 'square-outline'}
-          size={20}
-          color={consent ? palette.primary : palette.muted}
-        />
+        <View style={[styles.checkbox, consent && styles.checkboxSelected]}>
+          {consent ? <Ionicons name="checkmark" size={14} color="#FFFFFF" /> : null}
+        </View>
         <Text style={styles.consentText}>
-          I confirm these details are accurate and consent to sharing this application and its files with {reviewerNotice}.
+          I confirm these details are accurate and consent to sharing my application and its files with {reviewerNotice}. <Text style={styles.required}>*</Text>
         </Text>
       </Pressable>
-      {formError ? <Text accessibilityRole="alert" style={styles.error}>{formError}</Text> : null}
+      {formError ? (
+        <View accessibilityRole="alert" style={styles.errorCard}>
+          <Ionicons name="alert-circle-outline" size={19} color={palette.danger} />
+          <View style={styles.errorCopy}>
+            <Text style={styles.errorTitle}>Please check the following</Text>
+            <Text style={styles.error}>{formError}</Text>
+          </View>
+        </View>
+      ) : null}
       <View style={styles.actions}>
         {allowDraft ? (
           <Pressable
@@ -254,36 +480,91 @@ function mimeFromFilename(filename: string) {
   return '';
 }
 
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  return `${(size / 1024).toFixed(0)} KB`;
+}
+
+function SectionStatus({ number, complete }: { number: string; complete: boolean }) {
+  return (
+    <View style={[styles.sectionNumber, complete && styles.sectionNumberComplete]}>
+      {complete
+        ? <Ionicons name="checkmark" size={14} color={palette.primaryDark} />
+        : <Text style={styles.sectionNumberText}>{number}</Text>}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  form: { backgroundColor: palette.surfaceAlt, borderRadius: radius.lg, padding: spacing.md, marginTop: spacing.lg },
-  title: { color: palette.text, fontSize: 16, fontWeight: '800', marginBottom: spacing.xs, marginTop: spacing.sm },
-  helper: { color: palette.muted, fontSize: 12, lineHeight: 18, marginBottom: spacing.sm },
+  form: { width: '100%', maxWidth: 760, alignSelf: 'center', backgroundColor: palette.surface, borderRadius: radius.lg, padding: spacing.md, marginTop: spacing.lg, borderWidth: 1, borderColor: palette.border },
+  formHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: palette.border },
+  formHeaderIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E6F3EB' },
+  formHeaderCopy: { flex: 1 },
+  formTitle: { color: palette.text, fontSize: 19, lineHeight: 25, fontWeight: '800' },
+  progressCard: { marginTop: spacing.md, padding: spacing.md, backgroundColor: palette.surfaceAlt, borderRadius: radius.md },
+  progressHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  progressTitle: { color: palette.text, fontSize: 12, fontWeight: '800' },
+  progressCount: { color: palette.primaryDark, fontSize: 11, fontWeight: '700' },
+  progressTrack: { height: 7, overflow: 'hidden', backgroundColor: palette.border, borderRadius: 4, marginTop: spacing.sm },
+  progressFill: { height: '100%', backgroundColor: palette.primary, borderRadius: 4 },
+  progressHint: { color: palette.muted, fontSize: 11, marginTop: spacing.xs },
+  title: { color: palette.text, fontSize: 15, lineHeight: 20, fontWeight: '800' },
+  helper: { color: palette.muted, fontSize: 12, lineHeight: 18, marginTop: 3 },
+  section: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: palette.border },
+  sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+  sectionNumber: { width: 25, height: 25, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E6F3EB' },
+  sectionNumberComplete: { backgroundColor: '#CDE8D6' },
+  sectionNumberText: { color: palette.primaryDark, fontSize: 12, fontWeight: '800' },
+  sectionTitleCopy: { flex: 1 },
+  fieldLabel: { color: palette.text, fontSize: 12, fontWeight: '700', marginTop: spacing.sm },
+  required: { color: palette.danger, fontWeight: '800' },
+  optional: { color: palette.muted, fontSize: 11, fontWeight: '400' },
   input: {
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
     borderRadius: radius.md,
-    minHeight: 44,
+    minHeight: 48,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     color: palette.text,
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
+    fontSize: 14,
   },
-  multiline: { minHeight: 96 },
-  documentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: palette.surface, borderRadius: radius.md, padding: spacing.sm, marginTop: spacing.xs },
+  multiline: { minHeight: 120 },
+  characterCount: { color: palette.muted, fontSize: 11, textAlign: 'right', marginTop: spacing.xs },
+  documentCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: palette.surfaceAlt, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border, padding: spacing.sm, marginTop: spacing.sm },
+  documentIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: palette.surface, alignItems: 'center', justifyContent: 'center' },
   documentText: { flex: 1 },
-  requirement: { color: palette.text, fontSize: 13, fontWeight: '700' },
-  filename: { color: palette.muted, fontSize: 11, marginTop: 3 },
-  pickButton: { minHeight: 38, justifyContent: 'center', paddingHorizontal: spacing.md, borderWidth: 1, borderColor: palette.border, borderRadius: radius.md },
+  question: { gap: spacing.xs, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: palette.border },
+  questionOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  option: { minHeight: 40, justifyContent: 'center', borderWidth: 1, borderColor: palette.border, backgroundColor: palette.surface, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
+  optionSelected: { borderColor: palette.primary, backgroundColor: '#E6F3EB' },
+  optionText: { color: palette.text, fontSize: 12, fontWeight: '600' },
+  optionTextSelected: { color: palette.primaryDark },
+  requirement: { color: palette.text, fontSize: 12, lineHeight: 17, fontWeight: '700', flexShrink: 1 },
+  filename: { color: palette.muted, fontSize: 11, lineHeight: 16, marginTop: 3 },
+  pickButton: { minHeight: 40, justifyContent: 'center', alignItems: 'center', paddingHorizontal: spacing.md, borderWidth: 1, borderColor: palette.primary, backgroundColor: palette.surface, borderRadius: radius.md },
   pickText: { color: palette.primaryDark, fontSize: 12, fontWeight: '700' },
-  privacy: { color: palette.muted, fontSize: 11, lineHeight: 17, marginTop: spacing.sm },
-  consent: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, paddingVertical: spacing.md },
+  removeFileButton: { width: 34, height: 40, alignItems: 'center', justifyContent: 'center' },
+  uploadSummary: { color: palette.primaryDark, fontSize: 11, fontWeight: '700', textAlign: 'right', marginTop: spacing.sm },
+  privacyCard: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: '#F1F6F2', padding: spacing.sm, borderRadius: radius.md, marginTop: spacing.md },
+  privacy: { flex: 1, color: palette.muted, fontSize: 11, lineHeight: 16 },
+  termsCard: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: '#F1F6F2', padding: spacing.md, borderRadius: radius.md, marginTop: spacing.md },
+  termsCopy: { flex: 1 },
+  termsTitle: { color: palette.text, fontSize: 12, fontWeight: '800' },
+  consent: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md, marginTop: spacing.md, backgroundColor: palette.surfaceAlt, borderWidth: 1, borderColor: palette.border, borderRadius: radius.md },
+  checkbox: { width: 20, height: 20, borderWidth: 1.5, borderColor: palette.muted, borderRadius: 5, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.surface },
+  checkboxSelected: { borderColor: palette.primary, backgroundColor: palette.primary },
   consentText: { flex: 1, color: palette.text, fontSize: 12, lineHeight: 18 },
-  error: { color: palette.danger, fontSize: 12, lineHeight: 18, marginBottom: spacing.sm },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
-  draftButton: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: palette.primary, borderRadius: radius.md },
+  errorCard: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.sm, backgroundColor: '#F8E8E6', borderRadius: radius.md },
+  errorCopy: { flex: 1 },
+  errorTitle: { color: palette.danger, fontSize: 12, fontWeight: '800', marginBottom: 3 },
+  error: { color: palette.danger, fontSize: 12, lineHeight: 18 },
+  actions: { flexDirection: 'column-reverse', gap: spacing.sm, marginTop: spacing.md },
+  draftButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: palette.primary, borderRadius: radius.md, backgroundColor: palette.surface },
   draftText: { color: palette.primary, fontWeight: '700', fontSize: 12 },
-  submitButton: { flex: 1.4, minHeight: 44, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.primary, borderRadius: radius.md },
+  submitButton: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, backgroundColor: palette.primary, borderRadius: radius.md },
   submitText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
   disabled: { opacity: 0.6 },
 });

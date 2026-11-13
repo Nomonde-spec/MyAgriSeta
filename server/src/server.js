@@ -1,14 +1,23 @@
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, randomBytes, randomUUID } = require('node:crypto');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
-const { connectAndLoad, isDatabaseConnected, persistRecord, removeRecord } = require('./database');
+const {
+  connectAndLoad,
+  isDatabaseConnected,
+  persistRecord,
+  removeRecord,
+  persistRevokedToken,
+  loadActiveRevokedTokenHashes,
+} = require('./database');
 const {
   assertBrevoConfiguration,
   getBrevoDeliveryErrorMessage,
+  maskEmailAddress,
   sendBrevoNotification,
+  sendPasswordResetEmail,
 } = require('./email-notifications');
 const learning = require('./learning-data');
 const { curriculum } = require('./learning-curriculum');
@@ -30,7 +39,21 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const JWT_SECRET = process.env.JWT_SECRET || 'development-secret';
+const HOST = process.env.HOST || '0.0.0.0';
+const isTestEnvironment = process.env.NODE_ENV === 'test';
+
+// A missing JWT_SECRET used to silently fall back to a hardcoded value,
+// which would quietly issue guessable tokens in any environment someone
+// forgot to configure. Fail loudly instead, except in tests, which may run
+// without a .env file at all.
+let JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  if (isTestEnvironment) {
+    JWT_SECRET = 'test-only-secret-never-used-outside-automated-tests';
+  } else {
+    throw new Error('JWT_SECRET must be set. Refusing to start with an insecure default secret.');
+  }
+}
 
 const users = buildSeedUsers();
 const revokedTokens = new Set();
@@ -68,7 +91,36 @@ const applicationDocumentTypes = new Set(['application/pdf', 'image/jpeg', 'imag
 const maxApplicationDocumentSize = 2 * 1024 * 1024;
 const maxApplicationDocumentsSize = 5 * 1024 * 1024;
 
-app.use(cors({ origin: true, credentials: true }));
+// CLIENT_URL may hold one origin or a comma-separated list. In anything
+// other than production, common local Expo/web dev origins are allowed too
+// so local development isn't broken by whichever port Expo happens to pick.
+const configuredClientOrigins = (process.env.CLIENT_URL || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const localDevOrigins = [
+  'http://localhost:8081',
+  'http://127.0.0.1:8081',
+  'http://localhost:19006',
+  'http://127.0.0.1:19006',
+];
+const allowedOrigins = new Set([
+  ...configuredClientOrigins,
+  ...(process.env.NODE_ENV === 'production' ? [] : localDevOrigins),
+]);
+
+app.use(cors({
+  credentials: true,
+  origin(origin, callback) {
+    // Non-browser clients (the mobile app, curl, server-to-server calls)
+    // don't send an Origin header at all; only browsers enforce CORS, so
+    // there is nothing to restrict for them.
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('This origin is not permitted to access the MyAgriSETA API.'));
+  },
+}));
 app.use(express.json({ limit: '8mb' }));
 
 const sanitizeUser = (user, activeRole = user.activeRole || user.roles[0]) => ({
@@ -92,6 +144,7 @@ const sanitizeUser = (user, activeRole = user.activeRole || user.roles[0]) => ({
   ...(['learner', 'farmer'].includes(activeRole) ? {
     candidateProfile: {
       visible: Boolean(user.candidateProfile?.visible),
+      passportVisible: Boolean(user.candidateProfile?.passportVisible),
       desiredRole: user.candidateProfile?.desiredRole || '',
       province: user.candidateProfile?.province || '',
       summary: user.candidateProfile?.summary || '',
@@ -124,14 +177,16 @@ function authenticate(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = users.find((entry) => entry.id === decoded.sub);
+    const tokenHash = createHash('sha256').update(token).digest('hex');
 
-    if (revokedTokens.has(token) || !user || user.status !== 'active' ||
+    if (revokedTokens.has(tokenHash) || !user || user.status !== 'active' ||
         decoded.version !== (user.tokenVersion || 0)) {
       return res.status(401).json({ message: 'Account is inactive or invalid.' });
     }
 
     req.user = user;
     req.token = token;
+    req.tokenExpiresAt = decoded.exp ? new Date(decoded.exp * 1000) : null;
     req.activeRole = user.activeRole || user.roles[0];
     if (!req.activeRole || !user.roles.includes(req.activeRole)) {
       return res.status(401).json({ message: 'Account role assignment is invalid.' });
@@ -140,6 +195,31 @@ function authenticate(req, res, next) {
   } catch (error) {
     return res.status(401).json({ message: 'Session expired or invalid.' });
   }
+}
+
+// A small in-memory sliding-window limiter for the authentication endpoints,
+// keyed by IP + identifier so one abusive client can't lock out everyone
+// else sharing the same address. Skipped entirely in tests.
+const authAttempts = new Map();
+const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 8;
+
+function authRateLimit(req, res, next) {
+  if (isTestEnvironment) return next();
+  const identifier = String(req.body?.identifier || req.body?.email || '').trim().toLowerCase();
+  const key = `${req.ip}:${identifier}`;
+  const now = Date.now();
+  const entry = authAttempts.get(key);
+
+  if (!entry || now - entry.firstAttemptAt > AUTH_RATE_LIMIT_WINDOW_MS) {
+    authAttempts.set(key, { count: 1, firstAttemptAt: now });
+    return next();
+  }
+  if (entry.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+    return res.status(429).json({ message: 'Too many attempts. Please try again later.' });
+  }
+  entry.count += 1;
+  return next();
 }
 
 function requireRole(role) {
@@ -155,7 +235,22 @@ function getOpportunityStatus(opportunity, now = Date.now()) {
   if (opportunity.status !== 'Published') return opportunity.status;
   if (opportunity.closingDate && Date.parse(`${opportunity.closingDate}T23:59:59Z`) < now) return 'Closed';
   if (opportunity.recordExpiresAt && Date.parse(`${opportunity.recordExpiresAt}T23:59:59Z`) < now) return 'Expired';
+  if (opportunity.openingDate && Date.parse(`${opportunity.openingDate}T00:00:00Z`) > now) return 'Upcoming';
   return 'Open';
+}
+
+function getOpportunityAudienceRole(opportunity) {
+  return opportunity.category === 'Training Need' && opportunity.submittedByRole === 'employer'
+    ? 'learner'
+    : opportunity.role;
+}
+
+function getActiveOpportunityApplicationIds(userId) {
+  return new Set(
+    applications
+      .filter((entry) => entry.applicantId === userId && entry.opportunityId && entry.status !== 'Withdrawn')
+      .map((entry) => entry.opportunityId)
+  );
 }
 
 function needsVerifiedSource(opportunity) {
@@ -224,13 +319,18 @@ async function addUserNotification(userId, title, message, metadata = {}) {
     notification.emailDeliveryError = 'No registered email address is available for this account.';
     console.error(`Email notification ${notification.id} could not be sent: recipient account/email not found.`);
   } else {
+    notification.emailDeliveryRecipient = maskEmailAddress(recipient.email);
     try {
-      await sendBrevoNotification({ to: recipient.email, title, message });
+      const delivery = await sendBrevoNotification({ to: recipient.email, title, message });
       notification.emailDeliveryStatus = 'sent';
+      notification.emailDeliveryAttemptedAt = new Date().toISOString();
+      if (delivery.messageId) notification.emailDeliveryMessageId = delivery.messageId;
       delete notification.emailDeliveryError;
     } catch (error) {
       notification.emailDeliveryStatus = 'failed';
+      notification.emailDeliveryAttemptedAt = new Date().toISOString();
       notification.emailDeliveryError = getBrevoDeliveryErrorMessage(error);
+      delete notification.emailDeliveryMessageId;
       console.error(`Email notification ${notification.id} failed (${error.code || error.name || 'delivery error'}).`);
     }
   }
@@ -345,7 +445,7 @@ function getPublicOpportunityResponse(opportunity, extra = {}) {
     type: opportunity.type,
     category: opportunity.category,
     status: getOpportunityStatus(opportunity),
-    role: opportunity.role,
+    role: getOpportunityAudienceRole(opportunity),
     description: opportunity.description,
     organization: opportunity.organization,
     location: opportunity.location,
@@ -369,6 +469,11 @@ function getPublicOpportunityResponse(opportunity, extra = {}) {
     applicationUrl: opportunity.applicationUrl || '',
     openingDate: opportunity.openingDate,
     closingDate: opportunity.closingDate,
+    opportunityDetails: opportunity.opportunityDetails || {},
+    eligibilityCriteria: opportunity.eligibilityCriteria || {},
+    applicationQuestions: opportunity.applicationQuestions || [],
+    applicationTermsAndConditions: opportunity.applicationConfiguration?.termsAndConditions || '',
+    requiredApplicantInformation: opportunity.applicationConfiguration?.requiredInformation || [],
     sourceName: opportunity.sourceName || '',
     sourceUrl: opportunity.sourceUrl || '',
     sourceVerifiedAt: opportunity.sourceVerifiedAt || '',
@@ -430,6 +535,84 @@ function getOpportunityInput(body, { employer = false, draft = false } = {}) {
     : typeof body.requiredDocuments === 'string'
       ? body.requiredDocuments.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)
       : [];
+  const opportunityDetails = body.opportunityDetails === undefined ? {} : body.opportunityDetails;
+  const eligibilityCriteria = body.eligibilityCriteria === undefined ? {} : body.eligibilityCriteria;
+  const applicationConfiguration = body.applicationConfiguration === undefined ? {} : body.applicationConfiguration;
+  const applicationQuestions = body.applicationQuestions === undefined ? [] : body.applicationQuestions;
+  const isPlainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+  const cleanTextFields = (value, label) => {
+    if (!isPlainObject(value) || Object.keys(value).length > 30) return { error: `${label} must be a valid object.` };
+    const entries = Object.entries(value);
+    if (entries.some(([key, entry]) =>
+      !/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key) ||
+      typeof entry !== 'string' ||
+      entry.trim().length > 1000
+    )) return { error: `${label} fields must be text of 1,000 characters or fewer.` };
+    return { value: Object.fromEntries(entries.map(([key, entry]) => [key, entry.trim()])) };
+  };
+  const cleanDetails = cleanTextFields(opportunityDetails, 'Opportunity details');
+  const cleanEligibility = cleanTextFields(eligibilityCriteria, 'Eligibility requirements');
+  const applicationKeys = [
+    'openingDate', 'maximumApplications', 'termsAndConditions', 'allowSaveAsDraft',
+    'allowEditsBeforeClosing', 'allowAfterClosing', 'allowWithdrawal',
+    'enableReferenceNumbers', 'enableStatusTracking', 'assignReviewDepartment', 'reviewInstructions',
+    'requiredInformation',
+  ];
+  const allowedApplicationInformation = new Set([
+    'Personal information', 'Contact information', 'Academic information', 'Employment information',
+    'Business information', 'Agricultural experience', 'Motivation statement', 'Project proposal',
+    'Funding budget', 'Relevant skills',
+  ]);
+  const cleanApplicationConfiguration = isPlainObject(applicationConfiguration) &&
+    Object.keys(applicationConfiguration).every((key) => applicationKeys.includes(key))
+    ? applicationConfiguration
+    : null;
+  const requiredInformation = cleanApplicationConfiguration?.requiredInformation === undefined
+    ? []
+    : cleanApplicationConfiguration.requiredInformation;
+  const cleanQuestions = Array.isArray(applicationQuestions) && applicationQuestions.length <= 20
+    ? applicationQuestions.map((question) => {
+      if (!isPlainObject(question) ||
+          typeof question.title !== 'string' || (!draft && !question.title.trim()) || question.title.trim().length > 240 ||
+          typeof question.type !== 'string' ||
+          !['Short Text', 'Long Text', 'Dropdown', 'Multiple Choice', 'Checkboxes', 'Date', 'Number'].includes(question.type) ||
+          typeof question.required !== 'boolean' ||
+          (question.description !== undefined && (typeof question.description !== 'string' || question.description.length > 500)) ||
+          (question.options !== undefined && (!Array.isArray(question.options) || question.options.length > 20 ||
+            question.options.some((option) => typeof option !== 'string' || !option.trim() || option.length > 120)))) {
+        return null;
+      }
+      if (['Dropdown', 'Multiple Choice', 'Checkboxes'].includes(question.type) &&
+          (!Array.isArray(question.options) || (!draft && question.options.length < 2))) return null;
+      return {
+        title: question.title.trim(),
+        type: question.type,
+        required: question.required,
+        description: typeof question.description === 'string' ? question.description.trim() : '',
+        options: Array.isArray(question.options) ? question.options.map((option) => option.trim()) : [],
+      };
+    })
+    : null;
+  const openingDate = cleanApplicationConfiguration?.openingDate || '';
+  const maximumApplications = cleanApplicationConfiguration?.maximumApplications;
+  const usesExpandedForm = isPlainObject(body.applicationConfiguration) &&
+    Object.hasOwn(body.applicationConfiguration, 'openingDate');
+  const validMaximumApplications = maximumApplications === undefined || maximumApplications === null || maximumApplications === '' ||
+    (Number.isInteger(Number(maximumApplications)) && Number(maximumApplications) > 0 && Number(maximumApplications) <= 100000);
+  const validConfiguration = cleanApplicationConfiguration &&
+    Object.entries(cleanApplicationConfiguration).every(([key, value]) =>
+      ['allowSaveAsDraft', 'allowEditsBeforeClosing', 'allowAfterClosing', 'allowWithdrawal',
+        'enableReferenceNumbers', 'enableStatusTracking'].includes(key)
+        ? typeof value === 'boolean'
+        : key === 'requiredInformation'
+          ? Array.isArray(value) && value.length <= 10 &&
+            value.every((entry) => typeof entry === 'string' && allowedApplicationInformation.has(entry))
+        : key === 'maximumApplications'
+          ? validMaximumApplications
+          : typeof value === 'string' && value.trim().length <= (key === 'termsAndConditions' ? 5000 : 1000)
+    ) &&
+    (!openingDate || isValidIsoDate(openingDate)) &&
+    (!openingDate || !closingDate || openingDate <= closingDate);
 
   if (!title || title.length > 120 || !description || description.length > 2000 ||
       location.length > 120 || applicationInstructions.length > 1000 || applicationUrl.length > 500 ||
@@ -442,11 +625,51 @@ function getOpportunityInput(body, { employer = false, draft = false } = {}) {
       requirements.length > 20 || requirements.some((entry) => entry.length > 240) ||
       requiredDocuments.length > 5 || requiredDocuments.some((entry) =>
         entry.length > 160 || /identity|passport|bank account|health|medical|biometric/i.test(entry)
-      ) || new Set(requiredDocuments).size !== requiredDocuments.length) {
+      ) || new Set(requiredDocuments).size !== requiredDocuments.length ||
+      cleanDetails.error || cleanEligibility.error || !validConfiguration || !cleanQuestions ||
+      cleanQuestions.some((question) => question === null)) {
     return { error: 'Provide a title, description, and valid opportunity details within the allowed lengths.' };
+  }
+  if (!draft && usesExpandedForm && ['Funding', 'Grants'].includes(category) &&
+      (!cleanDetails.value.programmeName || !cleanDetails.value.fundingType ||
+       !cleanDetails.value.fundingPurpose || !cleanDetails.value.projectObjectives)) {
+    return { error: 'Funding and grant listings require a programme name, funding type, purpose, and project objectives.' };
+  }
+  if (!draft && usesExpandedForm && category === 'Bursary' &&
+      (!cleanDetails.value.programmeName || !cleanDetails.value.academicYear ||
+       !cleanDetails.value.qualificationLevel || !cleanDetails.value.fieldOfStudy)) {
+    return { error: 'Bursaries require a programme name, academic year, qualification level, and field of study.' };
+  }
+  if (!draft && usesExpandedForm &&
+      ['Learnership', 'Internship'].includes(category) &&
+      (!cleanDetails.value.programmeName || !cleanDetails.value.agriculturalField ||
+       !cleanDetails.value.positions || !cleanDetails.value.duration)) {
+    return { error: 'Learnerships and internships require a programme name, agricultural field, positions, and duration.' };
+  }
+  if (!draft && usesExpandedForm && ['Training', 'Mentorship', 'Skills Development'].includes(category) &&
+      (!cleanDetails.value.programmeName || !cleanDetails.value.programmeObjectives)) {
+    return { error: 'Training and mentorship opportunities require a programme name and learning objectives.' };
+  }
+  const amountFields = [
+    'minimumFundingAmount', 'maximumFundingAmount', 'totalFundingAmount', 'bursaryValue', 'stipend',
+  ];
+  if (amountFields.some((field) => cleanDetails.value[field] &&
+      (!Number.isFinite(Number(cleanDetails.value[field])) || Number(cleanDetails.value[field]) < 0))) {
+    return { error: 'Funding amounts, bursary values, and stipends must be non-negative ZAR amounts.' };
+  }
+  if (cleanDetails.value.minimumFundingAmount && cleanDetails.value.maximumFundingAmount &&
+      Number(cleanDetails.value.minimumFundingAmount) > Number(cleanDetails.value.maximumFundingAmount)) {
+    return { error: 'Maximum funding must be greater than or equal to minimum funding.' };
+  }
+  if (cleanDetails.value.positions &&
+      (!Number.isInteger(Number(cleanDetails.value.positions)) || Number(cleanDetails.value.positions) < 1)) {
+    return { error: 'Positions must be a positive whole number.' };
   }
   if (!draft && (!location || !applicationInstructions || !closingDate)) {
     return { error: 'Provide a location, application instructions, and deadline before submitting for review.' };
+  }
+  if (!draft && usesExpandedForm && !openingDate) {
+    return { error: 'Provide an application opening date before submitting for approval.' };
   }
   if (!draft && !employer && !(typeof body.organization === 'string' && body.organization.trim())) {
     return { error: 'Provide the organisation or funding source before submitting for review.' };
@@ -487,9 +710,9 @@ function getOpportunityInput(body, { employer = false, draft = false } = {}) {
     return { error: 'Choose a job, internship, workplace opportunity, or employee training need.' };
   }
   if (employer && isEmployerTrainingNeed &&
-      (!['training_provider', 'sdf'].includes(role) || !trainingObjectives || requiredSkills.length === 0 ||
+      (!['learner', 'training_provider', 'sdf'].includes(role) || !trainingObjectives || requiredSkills.length === 0 ||
        !participantCount || !startDate || !endDate)) {
-    return { error: 'Training needs require a training provider or SDF audience, objectives, priority skills, employee count, and programme dates.' };
+    return { error: 'Training needs require a training provider or SDF sponsor, objectives, priority skills, employee count, and programme dates.' };
   }
   if (employer && !isEmployerTrainingNeed && (!employmentType || requirements.length === 0 || !qualifications)) {
     return { error: 'Job, internship, and workplace listings require an employment type, qualifications, and at least one requirement.' };
@@ -523,6 +746,16 @@ function getOpportunityInput(body, { employer = false, draft = false } = {}) {
       fees,
       requirements,
       requiredDocuments,
+      opportunityDetails: cleanDetails.value,
+      eligibilityCriteria: cleanEligibility.value,
+      applicationConfiguration: {
+        ...cleanApplicationConfiguration,
+        maximumApplications: maximumApplications === undefined || maximumApplications === null || maximumApplications === ''
+          ? null
+          : Number(maximumApplications),
+      },
+      applicationQuestions: cleanQuestions,
+      openingDate: openingDate || null,
       eligibility: [role === '*' ? 'Eligible audiences vary by opportunity.' : role.replace('_', ' ')],
     },
   };
@@ -588,7 +821,7 @@ function getOpportunityManagementResponse(opportunity, { administrator = false }
   };
 }
 
-function getApplicationData(input, user) {
+function getApplicationData(input, user, customQuestions = [], requiredInformation = []) {
   const data = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const fullName = typeof data.fullName === 'string' ? data.fullName.trim() : '';
   const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
@@ -603,12 +836,53 @@ function getApplicationData(input, user) {
   if (email !== user.email.toLowerCase()) {
     return { error: 'Use the email address on your signed-in account for this application.' };
   }
+  const answers = Array.isArray(data.answers) ? data.answers : [];
+  if (answers.length !== customQuestions.length ||
+      answers.some((answer, index) => {
+        const question = customQuestions[index];
+        if (typeof answer === 'string') {
+          if (answer.length > 2000 || (question.required && !answer.trim())) return true;
+          if (['Dropdown', 'Multiple Choice'].includes(question.type) &&
+              answer && !question.options.includes(answer)) return true;
+          if (question.type === 'Date' && answer && !isValidIsoDate(answer)) return true;
+          if (question.type === 'Number' && answer && (!Number.isFinite(Number(answer)) || answer.length > 40)) return true;
+          return false;
+        }
+        if (Array.isArray(answer) && question.type === 'Checkboxes') {
+          return answer.length > question.options.length || answer.some((value) =>
+            typeof value !== 'string' || !question.options.includes(value)
+          ) || (question.required && answer.length === 0);
+        }
+        return true;
+      })) {
+    return { error: 'Answer every required custom question using the provided response options.' };
+  }
+  const additionalInformation = data.additionalInformation &&
+    typeof data.additionalInformation === 'object' && !Array.isArray(data.additionalInformation)
+    ? data.additionalInformation
+    : {};
+  const additionalInformationFields = requiredInformation.filter((field) =>
+    !['Personal information', 'Contact information', 'Motivation statement'].includes(field)
+  );
+  if (Object.keys(additionalInformation).some((field) => !additionalInformationFields.includes(field)) ||
+      additionalInformationFields.some((field) =>
+        typeof additionalInformation[field] !== 'string' ||
+        !additionalInformation[field].trim() ||
+        additionalInformation[field].trim().length > 2000
+      )) {
+    return { error: 'Complete each additional information field required for this opportunity.' };
+  }
   return {
     value: {
       fullName,
       email,
       phone,
       motivation,
+      answers,
+      additionalInformation: Object.fromEntries(additionalInformationFields.map((field) => [
+        field,
+        additionalInformation[field].trim(),
+      ])),
       consentedAt: new Date().toISOString(),
     },
   };
@@ -694,7 +968,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authRateLimit, async (req, res) => {
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
   const { firstName, lastName, email, username, password, role } = body;
 
@@ -816,7 +1090,7 @@ app.post('/api/auth/register', async (req, res) => {
   });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, async (req, res) => {
   const { identifier, password } = req.body || {};
 
   if (!identifier || !password) {
@@ -860,6 +1134,133 @@ app.post('/api/auth/login', async (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Self-service password reset (email via Brevo)
+//
+// Only a SHA-256 hash of the reset token is stored on the user record; the
+// raw token exists only in the email. Tokens are single-use, expire after
+// PASSWORD_RESET_TTL_MINUTES, and a successful reset bumps tokenVersion so
+// every existing session for that account is signed out.
+// The request endpoint always gives the same response so it cannot be used to
+// discover which email addresses have accounts.
+// ---------------------------------------------------------------------------
+const PASSWORD_RESET_TTL_MINUTES = 30;
+const PASSWORD_RESET_RESEND_COOLDOWN_MS = 60 * 1000;
+const passwordResetRequestMessage =
+  'If an active account uses that email address, a password reset link has been sent. Check your inbox and spam folder.';
+
+function hashPasswordResetToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function getPasswordResetUrl(token) {
+  const base = (process.env.PASSWORD_RESET_URL || '').trim() ||
+    `${(configuredClientOrigins[0] || 'http://localhost:8081').replace(/\/+$/, '')}/reset-password`;
+  const url = new URL(base);
+  url.searchParams.set('token', token);
+  return url.toString();
+}
+
+function getPasswordResetMailer() {
+  // Tests may provide a stand-in mailer through app.locals; otherwise the
+  // real Brevo mailer is used only when email delivery is enabled.
+  if (typeof app.locals.passwordResetMailer === 'function') return app.locals.passwordResetMailer;
+  return process.env.BREVO_EMAIL_ENABLED === 'true' ? sendPasswordResetEmail : null;
+}
+
+async function issuePasswordReset(user, mailer) {
+  const now = Date.now();
+  if (user.passwordResetRequestedAt &&
+      now - Date.parse(user.passwordResetRequestedAt) < PASSWORD_RESET_RESEND_COOLDOWN_MS) {
+    return;
+  }
+  const token = randomBytes(32).toString('hex');
+  user.passwordResetTokenHash = hashPasswordResetToken(token);
+  user.passwordResetExpiresAt = new Date(now + PASSWORD_RESET_TTL_MINUTES * 60 * 1000).toISOString();
+  user.passwordResetRequestedAt = new Date(now).toISOString();
+  await persistRecord('users', user);
+
+  try {
+    await mailer({
+      to: user.email,
+      firstName: user.firstName,
+      resetUrl: getPasswordResetUrl(token),
+      resetCode: token,
+      expiresInMinutes: PASSWORD_RESET_TTL_MINUTES,
+    });
+  } catch (error) {
+    console.error(`Password reset email could not be sent to ${maskEmailAddress(user.email)} (${error.code || error.name || 'delivery error'}): ${getBrevoDeliveryErrorMessage(error)}`);
+  }
+}
+
+app.post('/api/auth/password-reset/request', authRateLimit, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
+    return res.status(400).json({ message: 'Enter the email address on your account.' });
+  }
+
+  const mailer = getPasswordResetMailer();
+  if (!mailer) {
+    return res.status(503).json({
+      message: 'Password reset by email is not available right now. Contact your administrator to reset your password.',
+    });
+  }
+
+  const user = users.find((entry) => entry.email.toLowerCase() === email);
+  if (user && user.status === 'active') {
+    // Work happens after the response so the reply time does not reveal
+    // whether the account exists.
+    setImmediate(() => {
+      issuePasswordReset(user, mailer).catch((error) => {
+        console.error(`Password reset could not be issued (${error.code || error.name || 'storage error'}).`);
+      });
+    });
+  }
+  return res.json({ message: passwordResetRequestMessage });
+});
+
+app.post('/api/auth/password-reset/confirm', authRateLimit, async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  const invalidLinkMessage = 'This reset link or code is invalid or has expired. Request a new one.';
+
+  if (!/^[a-f0-9]{64}$/.test(token)) {
+    return res.status(400).json({ message: invalidLinkMessage });
+  }
+  if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) {
+    return res.status(400).json({ message: 'Password must be at least 8 characters and no more than 72 UTF-8 bytes.' });
+  }
+
+  const tokenHash = hashPasswordResetToken(token);
+  const user = users.find((entry) => entry.passwordResetTokenHash === tokenHash);
+  if (!user || user.status !== 'active' || !user.passwordResetExpiresAt ||
+      Date.parse(user.passwordResetExpiresAt) < Date.now()) {
+    return res.status(400).json({ message: invalidLinkMessage });
+  }
+
+  const updatedUser = {
+    ...user,
+    passwordHash: await bcrypt.hash(password, 10),
+    tokenVersion: (user.tokenVersion || 0) + 1,
+    passwordResetTokenHash: null,
+    passwordResetExpiresAt: null,
+    passwordResetRequestedAt: null,
+  };
+
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: user.email,
+    action: 'Reset account password through emailed reset link',
+    timestamp: new Date().toISOString(),
+  };
+  await persistRecord('users', updatedUser);
+  await persistRecord('auditLogs', auditEntry);
+  Object.assign(user, updatedUser);
+  auditLogs.push(auditEntry);
+
+  return res.json({ message: 'Your password has been reset. Sign in with your new password.' });
+});
+
 app.get('/api/auth/roles', authenticate, (req, res) => {
   return res.json({
     availableRoles: req.user.roles,
@@ -880,7 +1281,7 @@ app.patch('/api/me', authenticate, async (req, res) => {
   }
   const canManageCandidateProfile = ['learner', 'farmer'].includes(req.activeRole);
   if (canManageCandidateProfile) {
-    ['candidateVisible', 'candidateDesiredRole', 'candidateProvince', 'candidateSummary']
+    ['candidateVisible', 'candidatePassportVisible', 'candidateDesiredRole', 'candidateProvince', 'candidateSummary']
       .forEach((field) => allowedFields.add(field));
   }
   const suppliedFields = Object.keys(body);
@@ -942,6 +1343,7 @@ app.patch('/api/me', authenticate, async (req, res) => {
   if (canManageCandidateProfile && suppliedFields.some((field) => field.startsWith('candidate'))) {
     const currentProfile = {
       visible: Boolean(updatedUser.candidateProfile?.visible),
+      passportVisible: Boolean(updatedUser.candidateProfile?.passportVisible),
       desiredRole: updatedUser.candidateProfile?.desiredRole || '',
       province: updatedUser.candidateProfile?.province || '',
       summary: updatedUser.candidateProfile?.summary || '',
@@ -971,6 +1373,20 @@ app.patch('/api/me', authenticate, async (req, res) => {
         ? currentProfile.consentedAt || new Date().toISOString()
         : null;
       if (body.candidateVisible && !currentProfile.publicId) currentProfile.publicId = randomUUID();
+      if (!body.candidateVisible) {
+        currentProfile.passportVisible = false;
+        currentProfile.passportConsentedAt = null;
+      }
+    }
+    if (Object.hasOwn(body, 'candidatePassportVisible')) {
+      if (typeof body.candidatePassportVisible !== 'boolean') {
+        return res.status(400).json({ message: 'Passport sharing consent must be true or false.' });
+      }
+      if (body.candidatePassportVisible && !currentProfile.visible) {
+        return res.status(400).json({ message: 'Enable candidate profile visibility before sharing your passport with employers.' });
+      }
+      currentProfile.passportVisible = body.candidatePassportVisible;
+      currentProfile.passportConsentedAt = body.candidatePassportVisible ? new Date().toISOString() : null;
     }
     if (currentProfile.visible && !currentProfile.desiredRole) {
       return res.status(400).json({ message: 'A visible candidate profile must include a desired role.' });
@@ -1000,7 +1416,8 @@ app.get('/api/dashboard', authenticate, (req, res) => {
   );
   const matchingOpportunities = opportunities.filter((opportunity) =>
     opportunity.status === 'Published' &&
-    (opportunity.role === role || opportunity.role === '*' || isAdministrator || isInternalStaff)
+    (getOpportunityAudienceRole(opportunity) === role ||
+      getOpportunityAudienceRole(opportunity) === '*' || isAdministrator || isInternalStaff)
   );
   const userApplications = applications.filter((application) => application.applicantId === req.user.id);
   const openOpportunities = matchingOpportunities.filter((opportunity) => getOpportunityStatus(opportunity) === 'Open');
@@ -1101,9 +1518,9 @@ app.get('/api/dashboard', authenticate, (req, res) => {
     return res.json({
       userRole: role,
       title: 'Staff dashboard',
-      description: 'Review application and submission work assigned to staff functions.',
+      description: 'Review applications and submissions available to the staff role. Individual reviewer assignment and opportunity-review access are not configured.',
       metrics: [
-        { label: 'Applications in queue', value: applications.length },
+        { label: 'Applications available to staff', value: applications.length },
         { label: 'Review opportunities', value: matchingOpportunities.filter((item) => item.type === 'Review').length },
         { label: 'Available services', value: eligibleServices.length },
       ],
@@ -1616,6 +2033,254 @@ app.get('/api/learning/programmes', authenticate, (req, res) => {
   });
 });
 
+app.get('/api/learning/admin/dashboard', authenticate, requireRole('administrator'), (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const programmes = learning.courses.filter((course) => course.managedByAdministrator === true);
+  const enrollments = learning.enrollments.filter((entry) =>
+    programmes.some((course) => course.id === entry.courseId)
+  );
+  const activeEnrollments = enrollments.filter((entry) =>
+    entry.active && !['Withdrawn', 'Rejected'].includes(entry.status)
+  );
+  const completedLearnerIds = new Set([
+    ...learning.courseProgress
+      .filter((entry) => entry.completed && programmes.some((course) => course.id === entry.courseId))
+      .map((entry) => entry.userId),
+    ...enrollments.filter((entry) => (entry.trainingProgress || 0) >= 100).map((entry) => entry.applicantId),
+  ]);
+  const completedLearners = completedLearnerIds.size;
+  const recentMaterials = learning.resources
+    .filter((resource) => resource.publicationStatus !== 'Draft' &&
+      resource.programmeId && programmes.some((course) => course.id === resource.programmeId))
+    .sort((left, right) => (right.uploadedAt || '').localeCompare(left.uploadedAt || ''))
+    .slice(0, 5)
+    .map(({ content, attachment, ...resource }) => ({
+      ...resource,
+      ...(attachment ? {
+        attachment: { filename: attachment.filename, mimeType: attachment.mimeType, size: attachment.size },
+      } : {}),
+    }));
+  const learnerById = new Map(users.map((user) => [user.id, user]));
+
+  return res.json({
+    metrics: [
+      { label: 'Total programmes', value: programmes.length },
+      { label: 'Active programmes', value: programmes.filter((course) =>
+        course.status === 'Published' && (!course.endDate || course.endDate >= today)
+      ).length },
+      { label: 'Completed programmes', value: programmes.filter((course) =>
+        course.status === 'Archived' || Boolean(course.endDate && course.endDate < today)
+      ).length },
+      { label: 'Enrolled learners', value: new Set(activeEnrollments.map((entry) => entry.applicantId)).size },
+      { label: 'Pending enrolments', value: enrollments.filter((entry) =>
+        ['Submitted', 'Under Review', 'Waitlisted'].includes(entry.status)
+      ).length },
+      { label: 'Completed learners', value: completedLearners },
+    ],
+    programmes: programmes.map((course) => ({
+      ...getLearningCourse(course),
+      enrolmentCount: activeEnrollments.filter((entry) => entry.courseId === course.id).length,
+      completedCount: new Set([
+        ...learning.courseProgress
+          .filter((entry) => entry.courseId === course.id && entry.completed)
+          .map((entry) => entry.userId),
+        ...enrollments.filter((entry) => entry.courseId === course.id && (entry.trainingProgress || 0) >= 100)
+          .map((entry) => entry.applicantId),
+      ]).size,
+    })),
+    enrollments: enrollments
+      .filter((entry) => entry.status !== 'Withdrawn')
+      .sort((left, right) => (right.updatedAt || '').localeCompare(left.updatedAt || ''))
+      .map((entry) => {
+        const learner = learnerById.get(entry.applicantId);
+        const course = programmes.find((candidate) => candidate.id === entry.courseId);
+        const progress = learning.courseProgress.find((candidate) =>
+          candidate.userId === entry.applicantId && candidate.courseId === entry.courseId
+        );
+        return {
+          id: entry.id,
+          status: entry.status,
+          updatedAt: entry.updatedAt,
+          trainingProgress: progress?.progressPercent ?? entry.trainingProgress ?? 0,
+          learner: learner ? {
+            id: learner.id,
+            firstName: learner.firstName,
+            lastName: learner.lastName,
+          } : null,
+          programme: course ? { id: course.id, title: course.title } : null,
+        };
+      }),
+    recentMaterials,
+  });
+});
+
+app.post('/api/learning/admin/programmes', authenticate, requireRole('administrator'), async (req, res) => {
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const description = typeof body.description === 'string' ? body.description.trim() : '';
+  const requirements = typeof body.requirements === 'string' ? body.requirements.trim() : '';
+  const provider = learning.providers.find((entry) =>
+    entry.id === body.providerId && entry.status === 'published'
+  );
+  const eligibleRoles = ['learner', 'farmer', 'employer', 'sdf'].filter((role) =>
+    Array.isArray(body.eligibleRoles) && body.eligibleRoles.includes(role)
+  );
+  const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) &&
+    new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  const startDate = body.startDate === undefined || body.startDate === '' ? '' : body.startDate;
+  const endDate = body.endDate === undefined || body.endDate === '' ? '' : body.endDate;
+  const capacity = body.capacity === undefined || body.capacity === '' ? null : Number(body.capacity);
+  const status = body.status === 'Draft' ? 'Draft' : 'Published';
+  if (!title || title.length > 120 || !description || description.length > 1000 ||
+      !provider || !learning.categories.some((entry) => entry.id === body.categoryId) ||
+      !learning.programmes.some((entry) => entry.courseType === body.programmeType) ||
+      typeof body.duration !== 'string' || !body.duration.trim() || body.duration.length > 80 ||
+      typeof body.deliveryMethod !== 'string' || !body.deliveryMethod.trim() || body.deliveryMethod.length > 80 ||
+      typeof body.location !== 'string' || !body.location.trim() || body.location.length > 120 ||
+      requirements.length > 1000 || eligibleRoles.length === 0 ||
+      (startDate && !validDate(startDate)) || (endDate && !validDate(endDate)) ||
+      (startDate && endDate && endDate < startDate) ||
+      (capacity !== null && (!Number.isInteger(capacity) || capacity < 1 || capacity > 100000)) ||
+      (body.facilitator !== undefined && (typeof body.facilitator !== 'string' || body.facilitator.trim().length > 160))) {
+    return res.status(400).json({ message: 'Provide valid programme details, an active provider, an eligible audience, and valid dates and capacity.' });
+  }
+  const now = new Date().toISOString();
+  const course = {
+    id: `course-${randomUUID()}`,
+    title,
+    description,
+    requirements,
+    categoryId: body.categoryId,
+    providerId: provider.id,
+    duration: body.duration.trim(),
+    deliveryMethod: body.deliveryMethod.trim(),
+    eligibleRoles,
+    programmeType: body.programmeType,
+    location: body.location.trim(),
+    accreditation: 'Not verified',
+    status,
+    dataStatus: 'Administrator-managed programme. Availability and accreditation are not independently verified.',
+    interestEnabled: status === 'Published',
+    managedByAdministrator: true,
+    createdBy: req.user.id,
+    createdAt: now,
+    startDate: startDate || null,
+    endDate: endDate || null,
+    capacity,
+    facilitator: typeof body.facilitator === 'string' ? body.facilitator.trim() : '',
+    statusHistory: [{ status, date: now, actor: req.user.email }],
+    imageKey: 'agricultural-training',
+  };
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.username,
+    action: `${status} administrator learning programme ${course.id}`,
+    timestamp: now,
+  };
+  await persistRecord('learningCourses', course);
+  await persistRecord('auditLogs', auditEntry);
+  learning.courses.push(course);
+  auditLogs.push(auditEntry);
+  return res.status(201).json({ programme: getLearningCourse(course) });
+});
+
+app.patch('/api/learning/admin/programmes/:id', authenticate, requireRole('administrator'), async (req, res) => {
+  const course = learning.courses.find((entry) =>
+    entry.id === req.params.id && entry.managedByAdministrator === true
+  );
+  if (!course) return res.status(404).json({ message: 'Managed learning programme not found.' });
+  const { action } = req.body || {};
+  const transitions = { publish: 'Published', unpublish: 'Draft', archive: 'Archived' };
+  if (!Object.hasOwn(transitions, action)) {
+    return res.status(400).json({ message: 'Choose publish, unpublish, or archive.' });
+  }
+  if (course.status === 'Archived') {
+    return res.status(409).json({ message: 'Archived programmes cannot be changed.' });
+  }
+  if (['unpublish', 'archive'].includes(action) && learning.enrollments.some((entry) =>
+    entry.courseId === course.id && entry.active && entry.status !== 'Withdrawn'
+  )) {
+    return res.status(409).json({ message: 'Withdraw active learners before unpublishing or archiving this programme.' });
+  }
+  const now = new Date().toISOString();
+  const status = transitions[action];
+  const updated = {
+    ...course,
+    status,
+    interestEnabled: status === 'Published',
+    dataStatus: status === 'Published'
+      ? 'Administrator-managed programme. Availability and accreditation are not independently verified.'
+      : `Administrator ${status.toLowerCase()} programme.`,
+    statusHistory: [...(course.statusHistory || []), { status, date: now, actor: req.user.email }],
+  };
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.username,
+    action: `${status} administrator learning programme ${course.id}`,
+    timestamp: now,
+  };
+  await persistRecord('learningCourses', updated);
+  await persistRecord('auditLogs', auditEntry);
+  learning.courses[learning.courses.indexOf(course)] = updated;
+  auditLogs.push(auditEntry);
+  return res.json({ programme: getLearningCourse(updated) });
+});
+
+app.post('/api/learning/admin/enrollments', authenticate, requireRole('administrator'), async (req, res) => {
+  return res.status(403).json({
+    message: 'Administrators publish programmes; eligible users must enrol using their own accounts.',
+  });
+});
+
+app.patch('/api/learning/admin/enrollments/:id', authenticate, requireRole('administrator'), async (req, res) => {
+  const enrollment = learning.enrollments.find((entry) => entry.id === req.params.id);
+  const course = enrollment && learning.courses.find((entry) =>
+    entry.id === enrollment.courseId && entry.managedByAdministrator === true
+  );
+  if (!enrollment || !course) return res.status(404).json({ message: 'Managed programme enrolment not found.' });
+  if (!enrollment.active || enrollment.status === 'Withdrawn') {
+    return res.status(409).json({ message: 'This learner is already withdrawn from the programme.' });
+  }
+  const action = req.body?.action;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (action !== 'withdraw' || reason.length < 5 || reason.length > 500) {
+    return res.status(400).json({ message: 'Provide a withdrawal reason between 5 and 500 characters.' });
+  }
+  const now = new Date().toISOString();
+  const updated = {
+    ...enrollment,
+    active: false,
+    status: 'Withdrawn',
+    withdrawalReason: reason,
+    updatedAt: now,
+    statusHistory: [...(enrollment.statusHistory || []), {
+      status: 'Withdrawn',
+      date: now,
+      actor: req.user.email,
+      note: reason,
+    }],
+  };
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.username,
+    action: `Withdrew learner ${enrollment.applicantId} from learning programme ${course.id}`,
+    timestamp: now,
+  };
+  await persistRecord('enrollments', updated);
+  await persistRecord('auditLogs', auditEntry);
+  learning.enrollments[learning.enrollments.indexOf(enrollment)] = updated;
+  auditLogs.push(auditEntry);
+  await addUserNotification(
+    enrollment.applicantId,
+    'Learning programme update',
+    `Your enrolment in ${course.title} has been withdrawn by an administrator.`
+  );
+  return res.json({
+    enrollment: { id: updated.id, status: updated.status, withdrawalReason: updated.withdrawalReason },
+  });
+});
+
 app.get('/api/learning/providers', authenticate, (req, res) => {
   const { q = '', location, category, programmeType } = req.query;
   const query = String(q).trim().toLowerCase();
@@ -1668,27 +2333,95 @@ app.get('/api/learning/providers/:id', authenticate, (req, res) => {
 });
 
 app.get('/api/learning/resources', authenticate, (req, res) => {
-  const { q = '', category } = req.query;
+  const { q = '', category, programmeType, programmeId } = req.query;
   const query = String(q).trim().toLowerCase();
   return res.json({
     resources: learning.resources
       .filter((resource) =>
+        (req.activeRole === 'administrator' || resource.publicationStatus !== 'Draft') &&
+        canAccessLearningResource(resource, req.user.id, req.activeRole) &&
         (!category || resource.categoryId === String(category)) &&
-        (!query || `${resource.title} ${resource.summary} ${resource.format}`.toLowerCase().includes(query))
+        (!programmeType || resource.programmeType === String(programmeType)) &&
+        (!programmeId || resource.programmeId === String(programmeId)) &&
+        (!query || `${resource.title} ${resource.summary} ${resource.format} ${resource.programmeType || ''}`.toLowerCase().includes(query))
       )
-      .map(({ content, ...resource }) => resource),
+      .map(({ content, attachment, ...resource }) => {
+        const programme = req.activeRole === 'administrator' && resource.programmeId
+          ? learning.courses.find((course) => course.id === resource.programmeId)
+          : null;
+        return {
+          ...resource,
+          ...(programme ? {
+            programme: {
+              title: programme.title,
+              programmeType: programme.programmeType,
+              categoryId: programme.categoryId,
+              deliveryMethod: programme.deliveryMethod,
+              location: programme.location,
+              duration: programme.duration,
+              status: programme.status,
+              providerId: programme.providerId,
+            },
+          } : {}),
+          ...(attachment ? {
+            attachment: {
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+            },
+          } : {}),
+        };
+      }),
   });
 });
 
+function canAccessLearningResource(resource, userId, activeRole) {
+  if (activeRole === 'administrator') return true;
+  if (resource.publicationStatus === 'Draft') return false;
+  if (!resource.programmeId) return true;
+  return learning.enrollments.some((entry) =>
+    entry.applicantId === userId && entry.courseId === resource.programmeId &&
+    entry.active && !['Withdrawn', 'Rejected'].includes(entry.status)
+  );
+}
+
 app.get('/api/learning/resources/:id', authenticate, (req, res) => {
   const resource = learning.resources.find((entry) => entry.id === req.params.id);
-  if (!resource) return res.status(404).json({ message: 'Learning resource not found.' });
-  return res.json({ resource });
+  if (!resource || !canAccessLearningResource(resource, req.user.id, req.activeRole)) {
+    return res.status(404).json({ message: 'Learning resource not found.' });
+  }
+  const { attachment, ...resourceDetails } = resource;
+  return res.json({
+    resource: {
+      ...resourceDetails,
+      ...(attachment ? {
+        attachment: {
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        },
+      } : {}),
+    },
+  });
+});
+
+app.get('/api/learning/resources/:id/attachment', authenticate, (req, res) => {
+  const resource = learning.resources.find((entry) => entry.id === req.params.id);
+  if (!resource || !canAccessLearningResource(resource, req.user.id, req.activeRole)) {
+    return res.status(404).json({ message: 'Learning resource not found.' });
+  }
+  if (!resource.attachment) return res.status(404).json({ message: 'This learning resource has no attached file.' });
+  return res.json({ attachment: resource.attachment });
 });
 
 app.post('/api/learning/resources/:id/started', authenticate, async (req, res) => {
+  if (!['learner', 'farmer', 'employer', 'sdf'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Your account role cannot add learning materials to My learning.' });
+  }
   const resource = learning.resources.find((entry) => entry.id === req.params.id);
-  if (!resource) return res.status(404).json({ message: 'Learning resource not found.' });
+  if (!resource || !canAccessLearningResource(resource, req.user.id, req.activeRole)) {
+    return res.status(404).json({ message: 'Learning resource not found.' });
+  }
 
   const existing = learning.resourceProgress.find((entry) =>
     entry.userId === req.user.id && entry.resourceId === resource.id
@@ -1716,26 +2449,154 @@ app.post('/api/learning/resources', authenticate, async (req, res) => {
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const summary = typeof body.summary === 'string' ? body.summary.trim() : '';
+  const programmeType = typeof body.programmeType === 'string' ? body.programmeType.trim() : '';
+  const publicationStatus = body.publicationStatus === undefined ? 'Published' : body.publicationStatus;
+  const programme = body.programmeId
+    ? learning.courses.find((entry) =>
+      entry.id === body.programmeId && entry.managedByAdministrator === true && entry.status === 'Published'
+    )
+    : null;
   const content = Array.isArray(body.content)
     ? body.content.filter((paragraph) => typeof paragraph === 'string').map((paragraph) => paragraph.trim()).filter(Boolean)
     : [];
+  let attachment;
+  if (body.attachment !== undefined) {
+    const input = body.attachment;
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        typeof input.filename !== 'string' || typeof input.mimeType !== 'string' ||
+        typeof input.data !== 'string' || !Number.isInteger(input.size)) {
+      return res.status(400).json({ message: 'Choose a valid PDF, JPG, or PNG learning material file.' });
+    }
+    const filename = input.filename.trim().replace(/^.*[\\/]/, '');
+    const extension = filename.split('.').pop()?.toLowerCase();
+    const mimeType = input.mimeType.toLowerCase();
+    const validExtension = mimeType === 'application/pdf'
+      ? extension === 'pdf'
+      : mimeType === 'image/png'
+        ? extension === 'png'
+        : extension === 'jpg' || extension === 'jpeg';
+    const encoded = input.data;
+    if (!filename || filename.length > 180 ||
+        !applicationDocumentTypes.has(mimeType) || !validExtension ||
+        encoded.length > Math.ceil(maxApplicationDocumentSize * 4 / 3) + 4 ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      return res.status(400).json({ message: 'Learning material files must be PDF, JPG, or PNG and no larger than 2 MB.' });
+    }
+    const bytes = Buffer.from(encoded, 'base64');
+    const validSignature = mimeType === 'application/pdf'
+      ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+      : mimeType === 'image/png'
+        ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (!bytes.length || bytes.length > maxApplicationDocumentSize ||
+        bytes.length !== input.size || bytes.toString('base64') !== encoded || !validSignature) {
+      return res.status(400).json({ message: 'The learning material file is empty, oversized, or does not match its selected file type.' });
+    }
+    attachment = { filename, mimeType, size: bytes.length, data: encoded };
+  }
   if (!title || title.length > 120 || !summary || summary.length > 300 ||
       !learning.categories.some((entry) => entry.id === body.categoryId) ||
-      content.length === 0 || content.length > 12 || content.some((paragraph) => paragraph.length > 1500)) {
-    return res.status(400).json({ message: 'Provide a title, valid category, summary, and one to twelve paragraphs of content.' });
+      !learning.programmes.some((entry) => entry.courseType === programmeType) ||
+      (body.programmeId && (!programme || programme.programmeType !== programmeType)) ||
+      !['Draft', 'Published'].includes(publicationStatus) ||
+      (content.length === 0 && !attachment) || content.length > 12 ||
+      content.some((paragraph) => paragraph.length > 1500)) {
+    return res.status(400).json({ message: 'Provide a title, valid category and programme, summary, and text or an attached learning material file.' });
   }
   const resource = {
     id: `resource-${randomUUID()}`,
     title,
     categoryId: body.categoryId,
-    format: 'In-app guide',
+    programmeType,
+    ...(programme ? { programmeId: programme.id } : {}),
+    format: attachment ? attachment.mimeType === 'application/pdf' ? 'PDF material' : 'Image material' : 'In-app guide',
     summary,
     content,
+    ...(attachment ? { attachment } : {}),
+    uploadedBy: req.user.id,
+    uploadedAt: new Date().toISOString(),
+    publicationStatus,
     dataStatus: 'Administrator-managed educational content. Confirm local relevance before relying on it as technical advice.',
   };
   await persistRecord('learningResources', resource);
   learning.resources.push(resource);
-  return res.status(201).json({ resource });
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.username,
+    action: `${publicationStatus === 'Published' ? 'Published' : 'Saved draft learning material'} ${resource.id}`,
+    timestamp: resource.uploadedAt,
+  };
+  await persistRecord('auditLogs', auditEntry);
+  auditLogs.push(auditEntry);
+  if (programme && publicationStatus === 'Published') {
+    const enrolledLearnerIds = new Set(learning.enrollments
+      .filter((entry) => entry.courseId === programme.id && entry.active && entry.status !== 'Withdrawn')
+      .map((entry) => entry.applicantId));
+    for (const learnerId of enrolledLearnerIds) {
+      await addUserNotification(
+        learnerId,
+        'New learning material',
+        `${title} is now available in ${programme.title}.`,
+        { targetType: 'learning_material', targetId: resource.id }
+      );
+    }
+  }
+  return res.status(201).json({
+    resource: {
+      ...resource,
+      ...(attachment ? {
+        attachment: {
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        },
+      } : {}),
+    },
+  });
+});
+
+app.patch('/api/learning/resources/:id', authenticate, async (req, res) => {
+  if (req.activeRole !== 'administrator') {
+    return res.status(403).json({ message: 'Only administrators can manage learning material publication.' });
+  }
+  const resource = learning.resources.find((entry) => entry.id === req.params.id);
+  if (!resource) return res.status(404).json({ message: 'Learning resource not found.' });
+  const { publicationStatus } = req.body || {};
+  if (!['Draft', 'Published'].includes(publicationStatus)) {
+    return res.status(400).json({ message: 'Choose Draft or Published for the learning material.' });
+  }
+  const now = new Date().toISOString();
+  const updated = { ...resource, publicationStatus, updatedAt: now };
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.username,
+    action: `${publicationStatus === 'Published' ? 'Published' : 'Unpublished'} learning material ${resource.id}`,
+    timestamp: now,
+  };
+  await persistRecord('learningResources', updated);
+  await persistRecord('auditLogs', auditEntry);
+  learning.resources[learning.resources.indexOf(resource)] = updated;
+  auditLogs.push(auditEntry);
+  if (publicationStatus === 'Published' && resource.publicationStatus === 'Draft' && resource.programmeId) {
+    const enrolledLearnerIds = new Set(learning.enrollments
+      .filter((entry) => entry.courseId === resource.programmeId && entry.active && entry.status !== 'Withdrawn')
+      .map((entry) => entry.applicantId));
+    for (const learnerId of enrolledLearnerIds) {
+      await addUserNotification(
+        learnerId,
+        'New learning material',
+        `${resource.title} is now available in your programme.`,
+        { targetType: 'learning_material', targetId: resource.id }
+      );
+    }
+  }
+  const { content, attachment, ...safeResource } = updated;
+  return res.json({
+    resource: {
+      ...safeResource,
+      ...(attachment ? { attachment: { filename: attachment.filename, mimeType: attachment.mimeType, size: attachment.size } } : {}),
+    },
+  });
 });
 
 app.delete('/api/learning/resources/:id', authenticate, async (req, res) => {
@@ -1755,7 +2616,7 @@ app.delete('/api/learning/resources/:id', authenticate, async (req, res) => {
 });
 
 function requirePassportAccess(req, res) {
-  if (!['learner', 'farmer', 'sdf', 'administrator', 'internal_staff'].includes(req.activeRole)) {
+  if (!['learner', 'farmer'].includes(req.activeRole)) {
     res.status(403).json({ message: 'Skills passport access is not available for this role.' });
     return false;
   }
@@ -1803,7 +2664,266 @@ app.get('/api/passport', authenticate, (req, res) => {
   const certificates = learning.certificates
     .filter((entry) => entry.userId === req.user.id)
     .map((entry) => ({ ...entry }));
-  return res.json({ skills, certificates });
+  const records = learning.passportRecords
+    .filter((entry) => entry.userId === req.user.id)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map(getPassportRecordResponse);
+  return res.json({ skills, certificates, records });
+});
+
+function getPassportRecordResponse(record) {
+  const safeRecord = { ...record };
+  delete safeRecord.userId;
+  delete safeRecord.submittedBy;
+  delete safeRecord.documentData;
+  return {
+    ...safeRecord,
+    documents: (record.documents || []).map((document) =>
+      Object.fromEntries(Object.entries(document).filter(([key]) => key !== 'data'))
+    ),
+  };
+}
+
+function getPassportRecordInput(body) {
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const recordType = typeof input.recordType === 'string' ? input.recordType.trim() : '';
+  const allowedTypes = ['certificate', 'qualification', 'training', 'experience', 'achievement'];
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  const description = typeof input.description === 'string' ? input.description.trim() : '';
+  const organisation = typeof input.organisation === 'string' ? input.organisation.trim() : '';
+  const category = typeof input.category === 'string' ? input.category.trim() : '';
+  const level = typeof input.level === 'string' ? input.level.trim() : '';
+  const startDate = typeof input.startDate === 'string' ? input.startDate.trim() : '';
+  const endDate = typeof input.endDate === 'string' ? input.endDate.trim() : '';
+  const reference = typeof input.reference === 'string' ? input.reference.trim() : '';
+  const hours = input.hours === undefined || input.hours === null || input.hours === '' ? null : Number(input.hours);
+  if (!allowedTypes.includes(recordType)) return { error: 'Choose a supported passport record type.' };
+  if (title.length < 2 || title.length > 120) return { error: 'Record title must be between 2 and 120 characters.' };
+  if (description.length > 1000 || organisation.length > 120 || category.length > 80 ||
+      level.length > 80 || reference.length > 120) {
+    return { error: 'One or more passport record fields are too long.' };
+  }
+  for (const date of [startDate, endDate]) {
+    if (date && !isValidIsoDate(date)) return { error: 'Record dates must use YYYY-MM-DD format.' };
+  }
+  if (startDate && endDate && startDate > endDate) return { error: 'The end date must not be before the start date.' };
+  if (hours !== null && (!Number.isFinite(hours) || hours < 0 || hours > 10000)) {
+    return { error: 'Training hours must be a number from 0 to 10,000.' };
+  }
+  let documents;
+  if (Object.hasOwn(input, 'documents')) {
+    const parsedDocuments = getOpportunitySupportingDocuments(input.documents);
+    if (parsedDocuments.error) return parsedDocuments;
+    documents = parsedDocuments.value;
+  }
+  return {
+    value: {
+      recordType,
+      title,
+      description,
+      organisation,
+      category,
+      level,
+      startDate,
+      endDate,
+      reference,
+      hours,
+      ...(documents ? { documents } : {}),
+    },
+  };
+}
+
+function createPassportAudit(req, action, record) {
+  return {
+    id: `audit-${randomUUID()}`,
+    user: req.user.email,
+    action: `${action.trim()} ${record.recordType} passport record ${record.reference || record.id}`,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+app.get('/api/passport/me/summary', authenticate, (req, res) => {
+  if (!requirePassportAccess(req, res)) return;
+  const userRecords = learning.passportRecords.filter((entry) => entry.userId === req.user.id);
+  const skills = learning.passportSkills.filter((entry) => entry.userId === req.user.id).length;
+  const certificates = learning.certificates.filter((entry) => entry.userId === req.user.id).length +
+    userRecords.filter((entry) => entry.recordType === 'certificate').length;
+  const qualifications = userRecords.filter((entry) => entry.recordType === 'qualification').length;
+  return res.json({ skills, certificates, qualifications });
+});
+
+app.post('/api/passport/records', authenticate, async (req, res) => {
+  if (!requirePassportAccess(req, res)) return;
+  if (req.body?.action !== undefined && !['save', 'submit'].includes(req.body.action)) {
+    return res.status(400).json({ message: 'Choose save or submit as the passport record action.' });
+  }
+  const parsed = getPassportRecordInput(req.body);
+  if (parsed.error) return res.status(400).json({ message: parsed.error });
+  const existing = req.body?.id
+    ? learning.passportRecords.find((entry) => entry.id === req.body.id && entry.userId === req.user.id)
+    : null;
+  if (req.body?.id && !existing) return res.status(404).json({ message: 'Passport record not found.' });
+  if (!existing && learning.passportRecords.filter((entry) => entry.userId === req.user.id).length >= 100) {
+    return res.status(409).json({ message: 'A maximum of 100 additional Passport records can be added.' });
+  }
+  if (existing && !['Draft', 'Additional Information Required', 'Rejected'].includes(existing.status)) {
+    return res.status(409).json({ message: 'Only draft or returned records can be edited.' });
+  }
+  const addedDocuments = parsed.value.documents || [];
+  const previousDocuments = existing?.documents || [];
+  if (previousDocuments.length + addedDocuments.length > 5 ||
+      previousDocuments.reduce((sum, document) => sum + document.size, 0) +
+        addedDocuments.reduce((sum, document) => sum + document.size, 0) > maxApplicationDocumentsSize) {
+    return res.status(400).json({ message: 'A Passport record can include up to five supporting documents totalling 5 MB.' });
+  }
+  const action = req.body?.action === 'submit' ? 'submit' : 'save';
+  const now = new Date().toISOString();
+  const record = existing
+    ? {
+      ...existing,
+      ...parsed.value,
+      documents: [...previousDocuments, ...addedDocuments],
+      status: action === 'submit' ? 'Pending Verification' : 'Draft',
+      updatedAt: now,
+      ...(action === 'submit' ? { submittedAt: now, reference: existing.reference || `AGR-PAS-${randomUUID().slice(0, 8).toUpperCase()}` } : {}),
+    }
+    : {
+      id: `passport-${randomUUID()}`,
+      userId: req.user.id,
+      recordType: parsed.value.recordType,
+      ...parsed.value,
+      documents: addedDocuments,
+      reference: action === 'submit' ? `AGR-PAS-${randomUUID().slice(0, 8).toUpperCase()}` : '',
+      status: action === 'submit' ? 'Pending Verification' : 'Draft',
+      submittedBy: req.user.id,
+      createdAt: now,
+      updatedAt: now,
+      ...(action === 'submit' ? { submittedAt: now } : {}),
+    };
+  await persistRecord('passportRecords', record);
+  if (existing) {
+    learning.passportRecords[learning.passportRecords.indexOf(existing)] = record;
+  } else {
+    learning.passportRecords.push(record);
+  }
+  if (action === 'submit') {
+    const auditEntry = createPassportAudit(req, 'Submitted', record);
+    await persistRecord('auditLogs', auditEntry);
+    auditLogs.push(auditEntry);
+    for (const admin of users.filter((user) => user.status === 'active' && user.roles.includes('administrator'))) {
+      await addUserNotification(admin.id, 'Passport record submitted', `${record.title} is awaiting verification.`, {
+        targetType: 'passport_record',
+        targetId: record.id,
+      });
+    }
+  }
+  return res.status(existing ? 200 : 201).json({ record: getPassportRecordResponse(record) });
+});
+
+app.get('/api/admin/passport/verifications', authenticate, requireRole('administrator'), (req, res) => {
+  const records = learning.passportRecords
+    .filter((entry) => ['Pending Verification', 'Under Review', 'Additional Information Required'].includes(entry.status))
+    .sort((left, right) => (left.submittedAt || '').localeCompare(right.submittedAt || ''))
+    .map((record) => {
+      const owner = users.find((user) => user.id === record.userId);
+      return {
+        ...getPassportRecordResponse(record),
+        owner: owner ? { id: owner.id, firstName: owner.firstName, lastName: owner.lastName, role: owner.activeRole } : null,
+      };
+    });
+  return res.json({ records });
+});
+
+app.get('/api/passport/records/:id/documents/:documentId', authenticate, async (req, res) => {
+  const record = learning.passportRecords.find((entry) => entry.id === req.params.id);
+  if (!record) return res.status(404).json({ message: 'Passport document not found.' });
+  const ownerAccess = record.userId === req.user.id && ['learner', 'farmer'].includes(req.activeRole);
+  const administratorAccess = req.activeRole === 'administrator';
+  if (!ownerAccess && !administratorAccess) {
+    return res.status(403).json({ message: 'You are not permitted to access this Passport document.' });
+  }
+  const document = (record.documents || []).find((entry) => entry.id === req.params.documentId);
+  if (!document) return res.status(404).json({ message: 'Passport document not found.' });
+  if (administratorAccess) {
+    const auditEntry = {
+      id: `audit-${randomUUID()}`,
+      user: req.user.email,
+      action: `Viewed supporting document for Passport record ${record.reference || record.id}`,
+      timestamp: new Date().toISOString(),
+    };
+    await persistRecord('auditLogs', auditEntry);
+    auditLogs.push(auditEntry);
+  }
+  return res.json({
+    document: {
+      filename: document.filename,
+      mimeType: document.mimeType,
+      size: document.size,
+      data: document.data,
+    },
+  });
+});
+
+app.patch('/api/admin/passport/verifications/:id', authenticate, requireRole('administrator'), async (req, res) => {
+  const record = learning.passportRecords.find((entry) => entry.id === req.params.id);
+  if (!record) return res.status(404).json({ message: 'Passport submission not found.' });
+  if (!['Pending Verification', 'Under Review', 'Additional Information Required'].includes(record.status)) {
+    return res.status(409).json({ message: 'This passport submission is no longer available for review.' });
+  }
+  const { decision, comment = '', requirements = [] } = req.body || {};
+  const nextStatus = {
+    verify: 'Verified',
+    reject: 'Rejected',
+    request_information: 'Additional Information Required',
+    review: 'Under Review',
+  }[decision];
+  if (!nextStatus) return res.status(400).json({ message: 'Choose a valid verification decision.' });
+  if (typeof comment !== 'string' || comment.trim().length > 1000) {
+    return res.status(400).json({ message: 'Verification comments must be 1,000 characters or fewer.' });
+  }
+  if (decision === 'reject' && !comment.trim()) {
+    return res.status(400).json({ message: 'Provide a reason before rejecting a passport record.' });
+  }
+  if (!Array.isArray(requirements) || requirements.length > 10 ||
+      requirements.some((item) => typeof item !== 'string' || !item.trim() || item.length > 300)) {
+    return res.status(400).json({ message: 'Additional requirements must be a list of text items.' });
+  }
+  if (decision === 'request_information' && requirements.length === 0) {
+    return res.status(400).json({ message: 'List the additional information required.' });
+  }
+  const now = new Date().toISOString();
+  const verification = {
+    verifierId: req.user.id,
+    verifierRole: req.activeRole,
+    reviewedAt: now,
+    decision,
+    comment: comment.trim(),
+    requirements: decision === 'request_information' ? requirements : [],
+    previousStatus: record.status,
+  };
+  const updated = {
+    ...record,
+    status: nextStatus,
+    verification,
+    verificationHistory: [...(record.verificationHistory || []), verification],
+    updatedAt: now,
+  };
+  await persistRecord('passportRecords', updated);
+  learning.passportRecords[learning.passportRecords.indexOf(record)] = updated;
+  const auditAction = decision === 'verify' ? 'Verified'
+    : decision === 'reject' ? 'Rejected'
+      : decision === 'request_information' ? 'Requested information for' : 'Reviewed';
+  const auditEntry = createPassportAudit(req, auditAction, updated);
+  await persistRecord('auditLogs', auditEntry);
+  auditLogs.push(auditEntry);
+  const notificationText = decision === 'request_information'
+    ? `More information is needed for ${updated.title}: ${requirements.join(', ')}${comment.trim() ? ` ${comment.trim()}` : ''}`
+    : `Your ${updated.recordType} record "${updated.title}" was ${nextStatus.toLowerCase()}${comment.trim() ? `: ${comment.trim()}` : '.'}`;
+  await addUserNotification(updated.userId, `Passport record ${nextStatus.toLowerCase()}`, notificationText, {
+    targetType: 'passport_record',
+    targetId: updated.id,
+  });
+  return res.json({ record: getPassportRecordResponse(updated) });
 });
 
 app.post('/api/passport/skills', authenticate, async (req, res) => {
@@ -1857,6 +2977,16 @@ app.delete('/api/passport/skills/:id', authenticate, async (req, res) => {
 });
 
 app.get('/api/learning/me', authenticate, (req, res) => {
+  if (req.activeRole === 'administrator') {
+    return res.json({
+      enrollments: [],
+      savedCourses: [],
+      progress: [],
+      moduleProgress: [],
+      certificates: [],
+      startedResources: [],
+    });
+  }
   const savedIds = new Set(learning.savedCourses
     .filter((entry) => entry.userId === req.user.id)
     .map((entry) => entry.courseId));
@@ -1880,7 +3010,11 @@ app.get('/api/learning/me', authenticate, (req, res) => {
     ),
     certificates: learning.certificates.filter((entry) => entry.userId === req.user.id),
     startedResources: learning.resourceProgress
-      .filter((entry) => entry.userId === req.user.id)
+      .filter((entry) => {
+        if (entry.userId !== req.user.id) return false;
+        const resource = learning.resources.find((item) => item.id === entry.resourceId);
+        return resource && canAccessLearningResource(resource, req.user.id, req.activeRole);
+      })
       .map((entry) => {
         const resource = learning.resources.find((item) => item.id === entry.resourceId);
         return resource ? {
@@ -2058,6 +3192,9 @@ app.post('/api/learning/enrollments/:id/modules/:moduleId/assessment', authentic
 });
 
 app.post('/api/learning/courses/:id/saved', authenticate, async (req, res) => {
+  if (!['learner', 'farmer', 'employer', 'sdf'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Your account role cannot save learning courses.' });
+  }
   const course = learning.courses.find((entry) => entry.id === req.params.id);
   if (!course || !isVisibleLearningCourse(course)) {
     return res.status(404).json({ message: 'Learning course not found.' });
@@ -2074,6 +3211,9 @@ app.post('/api/learning/courses/:id/saved', authenticate, async (req, res) => {
 });
 
 app.delete('/api/learning/courses/:id/saved', authenticate, async (req, res) => {
+  if (!['learner', 'farmer', 'employer', 'sdf'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Your account role cannot manage saved learning courses.' });
+  }
   const savedIndex = learning.savedCourses.findIndex((entry) =>
     entry.userId === req.user.id && entry.courseId === req.params.id
   );
@@ -2115,6 +3255,13 @@ app.post('/api/learning/enrollments', authenticate, async (req, res) => {
     entry.applicantId === req.user.id && entry.courseId === course.id && entry.status !== 'Withdrawn'
   );
   if (existing) return res.status(409).json({ message: 'You already have an active enrolment or request for this course.' });
+  if (course.managedByAdministrator === true &&
+      course.capacity !== null && course.capacity !== undefined &&
+      learning.enrollments.filter((entry) =>
+        entry.courseId === course.id && entry.active && !['Withdrawn', 'Rejected'].includes(entry.status)
+      ).length >= course.capacity) {
+    return res.status(409).json({ message: 'This programme has reached its learner capacity.' });
+  }
 
   const now = new Date().toISOString();
   const status = body.draft === true
@@ -2574,7 +3721,7 @@ function registerStakeholderOpportunityRoutes(path, requiredRole) {
   const allowedCategories = isEmployer
     ? ['Employment', 'Internship', 'Workplace Opportunity', 'Training Need']
     : isProvider
-      ? ['Training', 'Learnership', 'Training Service', 'Training Partnership']
+      ? ['Training', 'Learnership', 'Skills Development', 'Training Service', 'Training Partnership', 'Funding']
       : ['Skills Development', 'Training Need', 'Training', 'Learnership', 'Funding', 'Training Partnership'];
 
   app.get(path, authenticate, (req, res) => {
@@ -2607,6 +3754,15 @@ function registerStakeholderOpportunityRoutes(path, requiredRole) {
     if (parsed.error) return res.status(400).json({ message: parsed.error });
     if (!allowedCategories.includes(parsed.value.category)) {
       return res.status(400).json({ message: `${requiredRole.replace('_', ' ')} accounts cannot submit this opportunity category.` });
+    }
+    if (isProvider && parsed.value.category === 'Funding' && action === 'submit') {
+      const details = parsed.value.opportunityDetails;
+      if (!parsed.value.trainingObjectives || !details.programmeName || !details.fundingType ||
+          !details.fundingPurpose || !details.projectObjectives) {
+        return res.status(400).json({
+          message: 'Training funding submissions require training objectives, a programme name and funding type, and a purpose and project objectives tied to skills development.',
+        });
+      }
     }
     const documents = getOpportunitySupportingDocuments(body.supportingDocuments ?? []);
     if (documents.error) return res.status(400).json({ message: documents.error });
@@ -2642,7 +3798,7 @@ function registerStakeholderOpportunityRoutes(path, requiredRole) {
       contactEmail: req.user.email,
       benefits: [],
       supportingDocuments: documents.value,
-      openingDate: null,
+      openingDate: parsed.value.openingDate,
       submittedAt: action === 'submit' ? now : null,
       reviewedAt: null,
       reviewedBy: '',
@@ -2675,10 +3831,21 @@ function registerStakeholderOpportunityRoutes(path, requiredRole) {
       entry.id === req.params.id && entry.ownerUserId === req.user.id
     );
     if (!opportunity) return res.status(404).json({ message: 'Opportunity submission not found.' });
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    if (isProvider && opportunity.status === 'Published' && body.action === 'withdraw') {
+      const now = new Date().toISOString();
+      const updated = {
+        ...opportunity,
+        status: 'Archived',
+        statusHistory: [...(opportunity.statusHistory || []), { status: 'Archived', date: now, actor: req.user.email }],
+      };
+      await persistRecord('opportunities', updated);
+      opportunities[opportunities.indexOf(opportunity)] = updated;
+      return res.json({ opportunity: getOpportunityManagementResponse(updated) });
+    }
     if (['Published', 'Archived', 'Closed'].includes(opportunity.status)) {
       return res.status(409).json({ message: 'Published or archived opportunities cannot be edited.' });
     }
-    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
     const now = new Date().toISOString();
     if (body.action === 'withdraw') {
       const updated = {
@@ -2699,6 +3866,15 @@ function registerStakeholderOpportunityRoutes(path, requiredRole) {
     if (parsed.error) return res.status(400).json({ message: parsed.error });
     if (!allowedCategories.includes(parsed.value.category)) {
       return res.status(400).json({ message: `${requiredRole.replace('_', ' ')} accounts cannot submit this opportunity category.` });
+    }
+    if (isProvider && parsed.value.category === 'Funding' && action === 'submit') {
+      const details = parsed.value.opportunityDetails;
+      if (!parsed.value.trainingObjectives || !details.programmeName || !details.fundingType ||
+          !details.fundingPurpose || !details.projectObjectives) {
+        return res.status(400).json({
+          message: 'Training funding submissions require training objectives, a programme name and funding type, and a purpose and project objectives tied to skills development.',
+        });
+      }
     }
     const documents = body.supportingDocuments === undefined
       ? { value: opportunity.supportingDocuments || [] }
@@ -3158,8 +4334,42 @@ app.get('/api/admin/opportunities', authenticate, (req, res) => {
     opportunities: filtered.map((entry) => ({
       ...getOpportunityManagementResponse(entry, { administrator: true }),
       effectiveStatus: entry.status === 'Published' ? getOpportunityStatus(entry) : entry.status,
+      applicationCount: applications.filter((application) =>
+        application.opportunityId === entry.id && !['Draft', 'Withdrawn'].includes(application.status)
+      ).length,
     })),
   });
+});
+
+app.get('/api/admin/opportunities/:id/applications', authenticate, async (req, res) => {
+  if (req.activeRole !== 'administrator') {
+    return res.status(403).json({ message: 'Only administrators can review opportunity applicants.' });
+  }
+  const opportunity = opportunities.find((entry) => entry.id === req.params.id);
+  if (!opportunity || opportunity.status !== 'Published') {
+    return res.status(404).json({ message: 'Published opportunity not found.' });
+  }
+  const opportunityApplications = applications
+    .filter((entry) => entry.opportunityId === opportunity.id && !['Draft', 'Withdrawn'].includes(entry.status))
+    .map((entry) => {
+      const applicant = users.find((user) => user.id === entry.applicantId);
+      return {
+        id: entry.id,
+        reference: entry.reference || entry.id,
+        status: entry.status,
+        submittedAt: entry.submittedAt,
+        applicantName: applicant ? `${applicant.firstName} ${applicant.lastName}` : 'Applicant unavailable',
+      };
+    });
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.email,
+    action: `Viewed ${opportunityApplications.length} application(s) for published opportunity ${opportunity.id}`,
+    timestamp: new Date().toISOString(),
+  };
+  await persistRecord('auditLogs', auditEntry);
+  auditLogs.push(auditEntry);
+  return res.json({ applications: opportunityApplications });
 });
 
 app.post('/api/admin/opportunities', authenticate, async (req, res) => {
@@ -3184,7 +4394,7 @@ app.post('/api/admin/opportunities', authenticate, async (req, res) => {
     organization: typeof body.organization === 'string' ? body.organization.trim().slice(0, 160) : 'AgriSETA',
     contactEmail: typeof body.contactEmail === 'string' ? body.contactEmail.trim().slice(0, 160) : '',
     benefits: Array.isArray(body.benefits) ? body.benefits.filter((entry) => typeof entry === 'string').map((entry) => entry.trim()).filter(Boolean).slice(0, 20) : [],
-    openingDate: null,
+    openingDate: parsed.value.openingDate,
     submittedAt: action === 'approve' ? now : null,
     reviewedAt: action === 'approve' ? now : null,
     reviewedBy: action === 'approve' ? req.user.email : '',
@@ -3218,7 +4428,7 @@ app.patch('/api/admin/opportunities/:id', authenticate, async (req, res) => {
     if (['Published', 'Archived'].includes(opportunity.status)) {
       return res.status(409).json({ message: 'Unpublish a listing before editing it.' });
     }
-    const parsed = getOpportunityInput(req.body);
+    const parsed = getOpportunityInput(req.body, { draft: true });
     if (parsed.error) return res.status(400).json({ message: parsed.error });
     const now = new Date().toISOString();
     const updated = {
@@ -3401,14 +4611,16 @@ app.patch('/api/admin/services/:id/requirements', authenticate, async (req, res)
 app.get('/api/opportunities', authenticate, (req, res) => {
   const { q = '', category, audience, status, employmentType, sort = 'deadline' } = req.query;
   const normalizedQuery = String(q).trim().toLowerCase();
+  const appliedOpportunityIds = getActiveOpportunityApplicationIds(req.user.id);
   const filteredOpportunities = opportunities.filter((entry) => {
-    if (entry.status !== 'Published' || getOpportunityStatus(entry) !== 'Open' || !canPublishOpportunity(entry)) return false;
+    if (entry.status !== 'Published' || !['Open', 'Upcoming'].includes(getOpportunityStatus(entry)) ||
+        !canPublishOpportunity(entry) || appliedOpportunityIds.has(entry.id)) return false;
     const matchesRole = ['administrator', 'internal_staff'].includes(req.activeRole) ||
-      entry.role === req.activeRole || entry.role === '*';
+      getOpportunityAudienceRole(entry) === req.activeRole || getOpportunityAudienceRole(entry) === '*';
     const matchesSearch = !normalizedQuery ||
       `${entry.title} ${entry.type} ${entry.category} ${entry.description} ${entry.role} ${entry.organization || ''} ${entry.location || ''} ${entry.employmentType || ''} ${entry.trainingObjectives || ''} ${(entry.requiredSkills || []).join(' ')}`.toLowerCase().includes(normalizedQuery);
     const matchesCategory = !category || entry.category.toLowerCase() === String(category).toLowerCase();
-    const matchesAudience = !audience || entry.role === audience;
+    const matchesAudience = !audience || getOpportunityAudienceRole(entry) === audience;
     const matchesEmployment = !employmentType ||
       String(entry.employmentType || '').toLowerCase() === String(employmentType).toLowerCase();
     const matchesStatus = !status || getOpportunityStatus(entry).toLowerCase() === String(status).toLowerCase();
@@ -3432,6 +4644,7 @@ app.get('/api/opportunities', authenticate, (req, res) => {
 });
 
 app.get('/api/opportunities/saved', authenticate, (req, res) => {
+  const appliedOpportunityIds = getActiveOpportunityApplicationIds(req.user.id);
   const savedIds = new Set(
     savedOpportunities.filter((entry) => entry.userId === req.user.id).map((entry) => entry.opportunityId)
   );
@@ -3440,9 +4653,11 @@ app.get('/api/opportunities/saved', authenticate, (req, res) => {
       .filter((entry) =>
         savedIds.has(entry.id) &&
         entry.status === 'Published' &&
-        getOpportunityStatus(entry) === 'Open' &&
+        ['Open', 'Upcoming'].includes(getOpportunityStatus(entry)) &&
         canPublishOpportunity(entry) &&
-        (['administrator', 'internal_staff'].includes(req.activeRole) || entry.role === req.activeRole || entry.role === '*')
+        !appliedOpportunityIds.has(entry.id) &&
+        (['administrator', 'internal_staff'].includes(req.activeRole) ||
+          getOpportunityAudienceRole(entry) === req.activeRole || getOpportunityAudienceRole(entry) === '*')
       )
       .map((entry) => getPublicOpportunityResponse(entry)),
   });
@@ -3450,9 +4665,11 @@ app.get('/api/opportunities/saved', authenticate, (req, res) => {
 
 app.post('/api/opportunities/:id/saved', authenticate, async (req, res) => {
   const opportunity = opportunities.find((entry) => entry.id === req.params.id);
-  if (!opportunity || opportunity.status !== 'Published' || getOpportunityStatus(opportunity) !== 'Open' ||
+  if (!opportunity || opportunity.status !== 'Published' ||
+      !['Open', 'Upcoming'].includes(getOpportunityStatus(opportunity)) ||
       !canPublishOpportunity(opportunity) ||
-      (!['administrator', 'internal_staff'].includes(req.activeRole) && opportunity.role !== req.activeRole && opportunity.role !== '*')) {
+      (!['administrator', 'internal_staff'].includes(req.activeRole) &&
+        getOpportunityAudienceRole(opportunity) !== req.activeRole && getOpportunityAudienceRole(opportunity) !== '*')) {
     return res.status(404).json({ message: 'Opportunity not found.' });
   }
   const existing = savedOpportunities.find(
@@ -3484,9 +4701,11 @@ app.delete('/api/opportunities/:id/saved', authenticate, async (req, res) => {
 
 app.get('/api/opportunities/:id', authenticate, (req, res) => {
   const opportunity = opportunities.find((entry) => entry.id === req.params.id);
-  if (!opportunity || opportunity.status !== 'Published' || getOpportunityStatus(opportunity) !== 'Open' ||
+  if (!opportunity || opportunity.status !== 'Published' ||
+      !['Open', 'Upcoming'].includes(getOpportunityStatus(opportunity)) ||
       !canPublishOpportunity(opportunity) ||
-      (!['administrator', 'internal_staff'].includes(req.activeRole) && opportunity.role !== req.activeRole && opportunity.role !== '*')) {
+      (!['administrator', 'internal_staff'].includes(req.activeRole) &&
+        getOpportunityAudienceRole(opportunity) !== req.activeRole && getOpportunityAudienceRole(opportunity) !== '*')) {
     return res.status(404).json({ message: 'Opportunity not found.' });
   }
 
@@ -3504,6 +4723,7 @@ app.get('/api/notifications', authenticate, (req, res) => {
     notifications: notifications
       .filter((entry) => {
         if (entry.userId && entry.userId !== req.user.id) return false;
+        if (!entry.userId && !entry.isAnnouncement) return false;
         if (!entry.userId && Array.isArray(entry.audience) &&
             !entry.audience.includes('*') && !entry.audience.includes(req.activeRole)) return false;
         if (entry.isAnnouncement && (entry.status !== 'published' ||
@@ -3521,7 +4741,15 @@ app.get('/api/notifications', authenticate, (req, res) => {
           isAnnouncement: true,
           createdAt: entry.createdAt,
         }
-        : { ...entry, canMarkRead: entry.userId === req.user.id }),
+        : {
+          ...entry,
+          ...(entry.userId === req.user.id
+            ? {
+              emailDeliveryRecipient: req.user.email,
+              canMarkRead: true,
+            }
+            : { canMarkRead: false }),
+        }),
   });
 });
 
@@ -3539,57 +4767,66 @@ app.patch('/api/notifications/:id/read', authenticate, async (req, res) => {
   return res.json({ notification: updated });
 });
 
-app.post('/api/notifications/resend-application-status', authenticate, async (req, res) => {
-  const pendingNotifications = notifications.filter((entry) =>
-    entry.userId === req.user.id &&
-    ['Application status updated', 'Application approved', 'Application rejected', 'Recruitment application updated'].includes(entry.title) &&
-    entry.emailDeliveryStatus !== 'sent'
-  );
-  if (pendingNotifications.length === 0) {
-    return res.json({ sentCount: 0, failedCount: 0 });
-  }
-  if (process.env.BREVO_EMAIL_ENABLED !== 'true') {
-    return res.status(503).json({ message: 'Email notifications are not enabled.' });
-  }
-
-  const recipient = users.find((user) => user.id === req.user.id);
-  if (!recipient?.email) {
-    return res.status(409).json({ message: 'No registered email address is available for this account.' });
-  }
-
-  let sentCount = 0;
-  let failedCount = 0;
-  for (const notification of pendingNotifications) {
-    let sent = false;
-    let deliveryError = '';
-    try {
-      await sendBrevoNotification({
-        to: recipient.email,
-        title: notification.title,
-        message: notification.message,
-      });
-      sent = true;
-    } catch (error) {
-      deliveryError = getBrevoDeliveryErrorMessage(error);
-      console.error(`Email notification ${notification.id} failed (${error.code || error.name || 'delivery error'}).`);
+app.post(
+  ['/api/notifications/resend-email', '/api/notifications/resend-application-status'],
+  authenticate,
+  async (req, res) => {
+    const pendingNotifications = notifications.filter((entry) =>
+      entry.userId === req.user.id &&
+      !entry.isDemo &&
+      !entry.isAnnouncement &&
+      (entry.emailDeliveryStatus !== 'sent' || !entry.emailDeliveryMessageId)
+    );
+    if (pendingNotifications.length === 0) {
+      return res.json({ sentCount: 0, failedCount: 0 });
+    }
+    if (process.env.BREVO_EMAIL_ENABLED !== 'true') {
+      return res.status(503).json({ message: 'Email notifications are not enabled.' });
     }
 
-    notification.emailDeliveryStatus = sent ? 'sent' : 'failed';
-    if (sent) delete notification.emailDeliveryError;
-    else notification.emailDeliveryError = deliveryError;
-    try {
-      await persistRecord('notifications', notification);
-    } catch (error) {
-      console.error(`Email notification status could not be saved for ${notification.id} (${error.code || error.name || 'database error'}).`);
-      failedCount += 1;
-      continue;
+    const recipient = users.find((user) => user.id === req.user.id);
+    if (!recipient?.email) {
+      return res.status(409).json({ message: 'No registered email address is available for this account.' });
     }
-    if (sent) sentCount += 1;
-    else failedCount += 1;
-  }
 
-  return res.json({ sentCount, failedCount });
-});
+    let sentCount = 0;
+    let failedCount = 0;
+    for (const notification of pendingNotifications) {
+      let sent = false;
+      let deliveryError = '';
+      notification.emailDeliveryAttemptedAt = new Date().toISOString();
+      notification.emailDeliveryRecipient = maskEmailAddress(recipient.email);
+      try {
+        const delivery = await sendBrevoNotification({
+          to: recipient.email,
+          title: notification.title,
+          message: notification.message,
+        });
+        sent = true;
+        if (delivery.messageId) notification.emailDeliveryMessageId = delivery.messageId;
+      } catch (error) {
+        deliveryError = getBrevoDeliveryErrorMessage(error);
+        delete notification.emailDeliveryMessageId;
+        console.error(`Email notification ${notification.id} failed (${error.code || error.name || 'delivery error'}).`);
+      }
+
+      notification.emailDeliveryStatus = sent ? 'sent' : 'failed';
+      if (sent) delete notification.emailDeliveryError;
+      else notification.emailDeliveryError = deliveryError;
+      try {
+        await persistRecord('notifications', notification);
+      } catch (error) {
+        console.error(`Email notification status could not be saved for ${notification.id} (${error.code || error.name || 'database error'}).`);
+        failedCount += 1;
+        continue;
+      }
+      if (sent) sentCount += 1;
+      else failedCount += 1;
+    }
+
+    return res.json({ sentCount, failedCount });
+  }
+);
 
 app.get('/api/admin/announcements', authenticate, requireRole('administrator'), (req, res) => {
   return res.json({
@@ -3687,8 +4924,8 @@ app.get('/api/applications', authenticate, (req, res) => {
 });
 
 app.get('/api/employer/applications', authenticate, async (req, res) => {
-  if (req.activeRole !== 'employer') {
-    return res.status(403).json({ message: 'Only employer accounts can review job applicants.' });
+  if (!['employer', 'administrator'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Only the opportunity publisher can review job applicants.' });
   }
   const ownedOpportunities = new Map(
     opportunities
@@ -3706,11 +4943,15 @@ app.get('/api/employer/applications', authenticate, async (req, res) => {
         reference: entry.reference || entry.id,
         opportunityId: entry.opportunityId,
         opportunityTitle: opportunity.title,
+        opportunityCategory: opportunity.category,
         applicationData: entry.applicationData || {},
         status: entry.status,
         submittedAt: entry.submittedAt,
         updatedAt: entry.updatedAt || entry.submittedAt,
         feedback: entry.feedback || '',
+        interviewAt: entry.interviewAt || '',
+        inductionDate: entry.inductionDate || '',
+        employmentStartDate: entry.employmentStartDate || '',
         documents: (entry.documents || []).map(({ data, ...metadata }) => metadata),
       };
     });
@@ -3723,6 +4964,59 @@ app.get('/api/employer/applications', authenticate, async (req, res) => {
   await persistRecord('auditLogs', auditEntry);
   auditLogs.push(auditEntry);
   return res.json({ applications: candidateApplications });
+});
+
+app.get('/api/employer/applications/:id/passport', authenticate, async (req, res) => {
+  if (!['employer', 'administrator'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Only the opportunity publisher can view applicant passports.' });
+  }
+  const application = applications.find((entry) => entry.id === req.params.id);
+  const opportunity = application?.opportunityId
+    ? opportunities.find((entry) => entry.id === application.opportunityId)
+    : null;
+  if (!application || !opportunity || opportunity.ownerUserId !== req.user.id ||
+      !['Employment', 'Internship', 'Workplace Opportunity', 'Training Need'].includes(opportunity.category) ||
+      ['Draft', 'Withdrawn'].includes(application.status)) {
+    return res.status(404).json({ message: 'Applicant passport not found.' });
+  }
+  const applicant = users.find((entry) => entry.id === application.applicantId);
+  if (!applicant || applicant.status !== 'active' || applicant.candidateProfile?.passportVisible !== true) {
+    return res.status(404).json({ message: 'Applicant passport not found.' });
+  }
+  const skills = learning.passportSkills
+    .filter((entry) => entry.userId === application.applicantId)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map(getPassportSkillResponse);
+  const certificates = learning.certificates
+    .filter((entry) => entry.userId === application.applicantId)
+    .map((entry) => ({
+      courseId: entry.courseId,
+      issuedAt: entry.issuedAt,
+      issuer: entry.issuer,
+      verificationStatus: entry.verificationStatus,
+    }));
+  const records = learning.passportRecords
+    .filter((entry) => entry.userId === application.applicantId)
+    .map((entry) => ({
+      id: entry.id,
+      recordType: entry.recordType,
+      title: entry.title,
+      organisation: entry.organisation,
+      category: entry.category,
+      level: entry.level,
+      status: entry.status,
+      reference: entry.reference,
+      verificationStatus: entry.status === 'Verified' ? 'Administrator-reviewed · not issuer-verified' : 'Not verified',
+    }));
+  const auditEntry = {
+    id: `audit-${randomUUID()}`,
+    user: req.user.email,
+    action: `Viewed applicant skills passport for application ${application.reference || application.id}`,
+    timestamp: new Date().toISOString(),
+  };
+  await persistRecord('auditLogs', auditEntry);
+  auditLogs.push(auditEntry);
+  return res.json({ skills, certificates, records });
 });
 
 app.get('/api/employer/candidates', authenticate, async (req, res) => {
@@ -3827,8 +5121,8 @@ app.post('/api/employer/candidates/:candidateId/invitations', authenticate, asyn
 });
 
 app.patch('/api/employer/applications/:id/status', authenticate, async (req, res) => {
-  if (req.activeRole !== 'employer') {
-    return res.status(403).json({ message: 'Only employer accounts can manage candidate applications.' });
+  if (!['employer', 'administrator'].includes(req.activeRole)) {
+    return res.status(403).json({ message: 'Only the opportunity publisher can manage candidate applications.' });
   }
   const application = applications.find((entry) => entry.id === req.params.id);
   const opportunity = application?.opportunityId
@@ -3839,6 +5133,40 @@ app.patch('/api/employer/applications/:id/status', authenticate, async (req, res
     return res.status(404).json({ message: 'Candidate application not found.' });
   }
   const { status, feedback = '' } = req.body || {};
+  const scheduleFields = ['interviewAt', 'inductionDate', 'employmentStartDate'];
+  const recruitmentCategory = ['Employment', 'Internship', 'Workplace Opportunity'].includes(opportunity.category);
+  const schedule = {};
+  for (const field of scheduleFields) {
+    if (!Object.hasOwn(req.body || {}, field)) continue;
+    const value = req.body[field];
+    if (typeof value !== 'string' || value.length > 40) {
+      return res.status(400).json({ message: 'Interview, induction, and start dates must be valid date text.' });
+    }
+    if (value.trim()) {
+      const datePart = value.slice(0, 10);
+      const date = new Date(`${datePart}T00:00:00Z`);
+      const validCalendarDate = /^\d{4}-\d{2}-\d{2}$/.test(datePart) &&
+        !Number.isNaN(date.getTime()) &&
+        date.toISOString().slice(0, 10) === datePart;
+      const dateValue = field === 'interviewAt'
+        ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) &&
+          validCalendarDate &&
+          Number(value.slice(11, 13)) <= 23 &&
+          Number(value.slice(14, 16)) <= 59
+        : validCalendarDate;
+      if (!dateValue) {
+        return res.status(400).json({
+          message: field === 'interviewAt'
+            ? 'Enter the interview date and time in YYYY-MM-DDTHH:MM format.'
+            : 'Enter a valid date in YYYY-MM-DD format.',
+        });
+      }
+      if (!recruitmentCategory) {
+        return res.status(400).json({ message: 'Scheduling is available only for job, internship, and workplace opportunities.' });
+      }
+    }
+    schedule[field] = value.trim();
+  }
   const allowedStatuses = ['Under Review', 'Shortlisted', 'Interview', 'Hired', 'Unsuccessful', 'Rejected'];
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ message: 'Choose a valid recruitment status.' });
@@ -3846,8 +5174,16 @@ app.patch('/api/employer/applications/:id/status', authenticate, async (req, res
   if (typeof feedback !== 'string' || feedback.trim().length > 500) {
     return res.status(400).json({ message: 'Candidate feedback must be text of 500 characters or fewer.' });
   }
-  if (!['Submitted', 'Under Review', 'Shortlisted', 'Interview'].includes(application.status)) {
+  if (!['Submitted', 'Under Review', 'Shortlisted', 'Interview', 'Approved'].includes(application.status)) {
     return res.status(409).json({ message: 'This application is no longer active in recruitment.' });
+  }
+  const interviewAt = schedule.interviewAt ?? application.interviewAt ?? '';
+  const employmentStartDate = schedule.employmentStartDate ?? application.employmentStartDate ?? '';
+  if (status === 'Interview' && recruitmentCategory && !interviewAt) {
+    return res.status(400).json({ message: 'Schedule the interview date and time before moving this candidate to Interview.' });
+  }
+  if (status === 'Hired' && recruitmentCategory && !employmentStartDate) {
+    return res.status(400).json({ message: 'Set the job start date before marking this candidate as Hired.' });
   }
   const now = new Date().toISOString();
   const updatedApplication = {
@@ -3855,10 +5191,12 @@ app.patch('/api/employer/applications/:id/status', authenticate, async (req, res
     status,
     updatedAt: now,
     feedback: feedback.trim(),
+    ...schedule,
     statusHistory: [...(application.statusHistory || []), {
       status,
       date: now,
       ...(feedback.trim() ? { feedback: feedback.trim() } : {}),
+      ...Object.fromEntries(Object.entries(schedule).filter(([, value]) => value)),
     }],
   };
   const auditEntry = {
@@ -3871,10 +5209,15 @@ app.patch('/api/employer/applications/:id/status', authenticate, async (req, res
   await persistRecord('auditLogs', auditEntry);
   Object.assign(application, updatedApplication);
   auditLogs.push(auditEntry);
+  const scheduleNotice = [
+    updatedApplication.interviewAt ? `Interview: ${updatedApplication.interviewAt.replace('T', ' ')}` : '',
+    updatedApplication.inductionDate ? `Induction: ${updatedApplication.inductionDate}` : '',
+    updatedApplication.employmentStartDate ? `Start date: ${updatedApplication.employmentStartDate}` : '',
+  ].filter(Boolean).join('. ');
   await addUserNotification(
     application.applicantId,
     'Recruitment application updated',
-    `Your application for ${opportunity.title} is now ${status}.${feedback.trim() ? ` ${feedback.trim()}` : ''}`,
+    `Your application for ${opportunity.title} is now ${status}.${feedback.trim() ? ` ${feedback.trim()}` : ''}${scheduleNotice ? ` ${scheduleNotice}.` : ''}`,
     { targetType: 'application', targetId: application.id }
   );
   return res.json({ application: getApplicationResponse(updatedApplication) });
@@ -3887,7 +5230,7 @@ app.get('/api/applications/:id/documents/:documentId', authenticate, async (req,
   const opportunity = application.opportunityId
     ? opportunities.find((entry) => entry.id === application.opportunityId)
     : null;
-  const isOwnerEmployer = req.activeRole === 'employer' &&
+  const isOwnerEmployer = ['employer', 'administrator'].includes(req.activeRole) &&
     opportunity?.ownerUserId === req.user.id &&
     ['Employment', 'Internship', 'Workplace Opportunity', 'Training Need'].includes(opportunity.category);
   if (application.applicantId !== req.user.id && !canReview && !isOwnerEmployer) {
@@ -3927,11 +5270,21 @@ app.post('/api/applications', authenticate, async (req, res) => {
     if (getOpportunityStatus(applicationTarget) !== 'Open' || !canPublishOpportunity(applicationTarget)) {
       return res.status(409).json({ message: 'This opportunity is no longer open.' });
     }
-    if (applicationTarget.role !== req.activeRole && applicationTarget.role !== '*') {
+    if (getOpportunityAudienceRole(applicationTarget) !== req.activeRole &&
+        getOpportunityAudienceRole(applicationTarget) !== '*') {
       return res.status(403).json({ message: 'This opportunity is not available for your role.' });
     }
     if (applications.some((entry) => entry.applicantId === req.user.id && entry.opportunityId === opportunityId && entry.status !== 'Withdrawn')) {
       return res.status(409).json({ message: 'You have already applied for this opportunity.' });
+    }
+    if (initialStatus === 'Draft' && applicationTarget.applicationConfiguration?.allowSaveAsDraft === false) {
+      return res.status(409).json({ message: 'Draft applications are not enabled for this opportunity.' });
+    }
+    const maximumApplications = applicationTarget.applicationConfiguration?.maximumApplications;
+    if (initialStatus === 'Submitted' && Number.isInteger(maximumApplications) &&
+        applications.filter((entry) => entry.opportunityId === opportunityId &&
+          !['Draft', 'Withdrawn'].includes(entry.status)).length >= maximumApplications) {
+      return res.status(409).json({ message: 'This opportunity has reached its application limit.' });
     }
   } else {
     applicationTarget = services.find((entry) => entry.id === serviceId);
@@ -3949,7 +5302,12 @@ app.post('/api/applications', authenticate, async (req, res) => {
     }
   }
 
-  const applicationData = getApplicationData(body.applicationData, req.user);
+  const applicationData = getApplicationData(
+    body.applicationData,
+    req.user,
+    hasOpportunity ? applicationTarget.applicationQuestions || [] : [],
+    hasOpportunity ? applicationTarget.applicationConfiguration?.requiredInformation || [] : []
+  );
   if (applicationData.error) return res.status(400).json({ message: applicationData.error });
   const documentResult = getApplicationDocuments(body.documents || [], applicationTarget.requiredDocuments || []);
   if (documentResult.error) return res.status(400).json({ message: documentResult.error });
@@ -4007,13 +5365,20 @@ app.patch('/api/applications/:id', authenticate, async (req, res) => {
       if (!opportunity || getOpportunityStatus(opportunity) !== 'Open' || !canPublishOpportunity(opportunity)) {
         return res.status(409).json({ message: 'This opportunity is no longer open.' });
       }
-      if (opportunity.role !== req.activeRole && opportunity.role !== '*') {
+      if (getOpportunityAudienceRole(opportunity) !== req.activeRole &&
+          getOpportunityAudienceRole(opportunity) !== '*') {
         return res.status(403).json({ message: 'This opportunity is not available for your role.' });
       }
       if ((opportunity.requiredDocuments || []).some((requirement) =>
         !(application.documents || []).some((document) => document.requirement === requirement)
       )) {
         return res.status(400).json({ message: 'Upload every required document before submitting this application.' });
+      }
+      const maximumApplications = opportunity.applicationConfiguration?.maximumApplications;
+      if (Number.isInteger(maximumApplications) &&
+          applications.filter((entry) => entry.opportunityId === opportunity.id &&
+            !['Draft', 'Withdrawn'].includes(entry.status)).length >= maximumApplications) {
+        return res.status(409).json({ message: 'This opportunity has reached its application limit.' });
       }
     } else if (application.serviceId) {
       const service = services.find((entry) => entry.id === application.serviceId);
@@ -4029,10 +5394,15 @@ app.patch('/api/applications/:id', authenticate, async (req, res) => {
         return res.status(400).json({ message: 'Upload every required document before submitting this application.' });
       }
     }
-    const checkedData = getApplicationData({
-      ...(application.applicationData || {}),
-      consent: true,
-    }, req.user);
+    const applicationOpportunity = application.opportunityId
+      ? opportunities.find((entry) => entry.id === application.opportunityId)
+      : null;
+    const checkedData = getApplicationData(
+      { ...(application.applicationData || {}), consent: true },
+      req.user,
+      applicationOpportunity?.applicationQuestions || [],
+      applicationOpportunity?.applicationConfiguration?.requiredInformation || []
+    );
     if (checkedData.error) {
       return res.status(400).json({ message: 'Complete the application form before submitting.' });
     }
@@ -4042,6 +5412,12 @@ app.patch('/api/applications/:id', authenticate, async (req, res) => {
     action === 'withdraw' &&
     ['Draft', 'Submitted', 'Under Review', 'Additional Information Required'].includes(application.status)
   ) {
+    const opportunity = application.opportunityId
+      ? opportunities.find((entry) => entry.id === application.opportunityId)
+      : null;
+    if (opportunity?.applicationConfiguration?.allowWithdrawal === false) {
+      return res.status(409).json({ message: 'Withdrawal is not enabled for this opportunity.' });
+    }
     updatedApplication.status = 'Withdrawn';
   } else {
     return res.status(400).json({ message: 'This application action is not available for its current status.' });
@@ -4069,6 +5445,18 @@ app.patch('/api/admin/applications/:id/status', authenticate, (req, res, next) =
   const { status, outstandingRequirements = [], feedback = '' } = req.body || {};
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ message: 'A valid review status is required.' });
+  }
+  if (req.activeRole === 'internal_staff' && ['Approved', 'Rejected', 'Unsuccessful'].includes(status)) {
+    return res.status(403).json({ message: 'Only an administrator can make a final application decision.' });
+  }
+  const opportunity = application.opportunityId
+    ? opportunities.find((entry) => entry.id === application.opportunityId)
+    : null;
+  const isRecruitmentApplication = ['Employment', 'Internship', 'Workplace Opportunity'].includes(opportunity?.category);
+  if (isRecruitmentApplication &&
+      ['Approved', 'Rejected', 'Unsuccessful'].includes(status) &&
+      opportunity.ownerUserId !== req.user.id) {
+    return res.status(403).json({ message: 'Only the user who posted this opportunity can make its final recruitment decision.' });
   }
   if (typeof feedback !== 'string' || feedback.trim().length > 500) {
     return res.status(400).json({ message: 'Feedback must be text of 500 characters or fewer.' });
@@ -4115,10 +5503,13 @@ app.patch('/api/admin/applications/:id/status', authenticate, (req, res, next) =
     : ['Rejected', 'Unsuccessful'].includes(status)
       ? 'Application rejected'
       : 'Application status updated';
+  const requirementsMessage = status === 'Additional Information Required'
+    ? `\nAdditional documents or information requested:\n${outstandingRequirements.map((item) => `- ${item.trim()}`).join('\n')}`
+    : '';
   await addUserNotification(
     application.applicantId,
     notificationTitle,
-    `Your application ${application.reference || application.id} is now ${status}.${feedback.trim() ? ` ${feedback.trim()}` : ''}`,
+    `Your application ${application.reference || application.id} is now ${status}.${feedback.trim() ? ` ${feedback.trim()}` : ''}${requirementsMessage}`,
     { targetType: 'application', targetId: application.id }
   );
   return res.json({ application: getApplicationResponse(updatedApplication) });
@@ -4166,14 +5557,17 @@ app.patch('/api/admin/role-requests/:id', authenticate, requireRole('administrat
   }
 
   const now = new Date().toISOString();
+  const roleVerification = user.roleVerificationDetails || {};
+  const organizationName = String(roleVerification.organization || user.organization || '').trim().toLowerCase();
+  const workEmailDomain = String(roleVerification.workEmail || user.email || '').split('@').pop()?.trim().toLowerCase() || '';
   const updatedUser = {
     ...user,
     status: decision === 'approved' ? 'active' : 'inactive',
     roleVerificationStatus: decision,
     roleVerificationDetails: null,
-    ...(decision === 'approved' && user.roles.includes('sdf') ? {
+    ...(decision === 'approved' && user.roles.includes('sdf') && organizationName && workEmailDomain ? {
       sdfOrganizationId: `sdf-org-${createHash('sha256')
-        .update(`${user.roleVerificationDetails.organization.trim().toLowerCase()}|${user.roleVerificationDetails.workEmail.split('@').pop().toLowerCase()}`)
+        .update(`${organizationName}|${workEmailDomain}`)
         .digest('hex')}`,
     } : {}),
     roleVerificationReviewedAt: now,
@@ -4408,6 +5802,10 @@ app.patch('/api/users/:id', authenticate, requireRole('administrator'), async (r
     }
     updatedUser.passwordHash = await bcrypt.hash(body.password, 10);
     updatedUser.tokenVersion = (user.tokenVersion || 0) + 1;
+    // An administrator-set password supersedes any outstanding reset link.
+    updatedUser.passwordResetTokenHash = null;
+    updatedUser.passwordResetExpiresAt = null;
+    updatedUser.passwordResetRequestedAt = null;
   }
   const duplicate = users.find((entry) =>
     entry.id !== user.id &&
@@ -4618,8 +6016,16 @@ app.get('/api/staff/review-queue', authenticate, (req, res) => {
   });
 });
 
-app.post('/api/auth/logout', authenticate, (req, res) => {
-  revokedTokens.add(req.token);
+app.post('/api/auth/logout', authenticate, async (req, res) => {
+  const tokenHash = createHash('sha256').update(req.token).digest('hex');
+  revokedTokens.add(tokenHash);
+  // Fire-and-forget from the response's perspective, but awaited so a
+  // persistence error is logged rather than silently lost: the in-memory
+  // revocation above already takes effect immediately either way.
+  await persistRevokedToken(
+    tokenHash,
+    req.tokenExpiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000)
+  );
   return res.json({ message: 'Logged out successfully.' });
 });
 
@@ -4629,6 +6035,9 @@ app.use((req, res) => {
 
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
+  if (error.message === 'This origin is not permitted to access the MyAgriSETA API.') {
+    return res.status(403).json({ message: error.message });
+  }
   console.error(`API request failed (${error.name || 'Error'}).`);
   return res.status(500).json({ message: 'The request could not be completed.' });
 });
@@ -4658,6 +6067,7 @@ if (require.main === module) {
       moduleProgress: learning.moduleProgress,
       certificates: learning.certificates,
       passportSkills: learning.passportSkills,
+      passportRecords: learning.passportRecords,
       opportunities,
       savedOpportunities,
       notifications,
@@ -4665,6 +6075,9 @@ if (require.main === module) {
       auditLogs,
       sdfWorkforceRecords,
     });
+
+    const persistedRevocations = await loadActiveRevokedTokenHashes();
+    persistedRevocations.forEach((hash) => revokedTokens.add(hash));
 
     for (const announcement of notifications.filter((entry) =>
       entry.isAnnouncement === true &&
@@ -4674,8 +6087,8 @@ if (require.main === module) {
       await dispatchAnnouncementEmails(announcement);
     }
 
-    app.listen(PORT, () => {
-      console.log(`MyAgriSETA backend running on http://localhost:${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`MyAgriSETA backend listening on ${HOST}:${PORT}`);
       if (!databaseConnected) throw new Error('Neon PostgreSQL persistence is required.');
       console.log('Neon PostgreSQL persistence is enabled.');
     });

@@ -27,7 +27,7 @@ npm install
 npm run dev
 ```
 
-The app's default API URL is `http://localhost:3000/api`. For a physical device, set `EXPO_PUBLIC_API_URL` in `mobile/.env` to the development computer's LAN address. From the repository root, `npm run dev` starts the API and then the Expo web app after the API health check succeeds.
+The web app's default API URL is `http://localhost:3000/api`. To use Expo Go, start the API with `npm --prefix server run dev` from the repository root (or `npm run dev` if already inside `server/`). In a second terminal at the repository root, run `npm run dev:mobile`; Expo starts in LAN mode and the native app automatically uses the development server's host for API requests. Keep the phone and computer on the same network and allow Node.js through the computer's private-network firewall. From the repository root, `npm run dev` starts the API and Expo web app after the API health check succeeds.
 
 Local demo accounts and setup details are in [docs/SETUP.md](./docs/SETUP.md).
 

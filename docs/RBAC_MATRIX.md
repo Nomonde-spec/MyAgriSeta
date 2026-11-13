@@ -38,7 +38,7 @@ The API filters the directory and applies the same eligibility check to service-
 
 ## Current limitations
 
-- User, service, application, bookmark, announcement, and audit records persist in Neon. Password changes invalidate existing account tokens. Logout revocation remains in memory and resets on backend restart.
+- User, service, application, bookmark, announcement, and audit records persist in Neon. Password changes invalidate existing account tokens. Logout revokes the token in the running API process and persists its hash and expiry in Neon, surviving API restarts.
 - Learners can self-register and sign in immediately. Other public stakeholder roles can submit self-registration requests, but their accounts remain inactive until administrator verification. Administrator and internal-staff roles cannot be self-registered.
 - Administrators also provision accounts, assign one or more roles, set the active role, edit account details/passwords, and activate or deactivate accounts. Permissions are derived from the assigned active role, not independently edited. Passwords are hashed; password-reset notifications are not configured.
 - The server uses Neon PostgreSQL only. `DATABASE_URL` is mandatory in every environment; the API does not fall back to in-memory storage or another database.

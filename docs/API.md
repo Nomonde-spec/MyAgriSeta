@@ -10,7 +10,8 @@ This reference describes the Express API currently implemented in `server/src/se
 - Requests and responses use JSON unless noted otherwise.
 - Authenticated requests use `Authorization: Bearer <token>`.
 - Access tokens are signed JWTs and expire after eight hours.
-- There is no pagination, version prefix, or documented rate limit.
+- Login and registration are limited to eight attempts per IP-and-identifier key per 15 minutes in each API process; this in-memory limit is skipped in automated tests and is not shared across instances.
+- There is no pagination or version prefix.
 
 ## Roles
 
@@ -84,6 +85,14 @@ Success (`200`) returns a signed token, a sanitized user, and the account's assi
 
 Returns `400` if the identifier or password is missing, `401` for invalid credentials or an inactive account, and `403` while a role request is pending or rejected.
 
+### `POST /api/auth/password-reset/request`
+
+Public, rate-limited. Body: `{ "email": "name@example.co.za" }`. Always returns `200` with the same message whether or not an active account uses that email, so it cannot be used to find accounts. For an active account it emails a reset link and code through Brevo. Only a SHA-256 hash of the code is stored, it expires after 30 minutes, and a new one can be issued every 60 seconds. Returns `400` for an invalid email and `503` when Brevo email is not enabled.
+
+### `POST /api/auth/password-reset/confirm`
+
+Public, rate-limited. Body: `{ "token": "<64-character reset code>", "password": "new password" }`. Sets a new bcrypt-hashed password, makes the code unusable, invalidates all existing tokens for the account, and writes an audit entry. Returns `200` on success. Returns `400` with the same message for invalid, used, or expired codes, and `400` if the password is shorter than 8 characters or longer than 72 UTF-8 bytes.
+
 ### `GET /api/auth/roles`
 
 Authentication required. Returns the roles and active role stored on the authenticated account:
@@ -100,17 +109,17 @@ Authentication required. Returns `{ "user": <sanitized user> }` for the current 
 
 ### `PATCH /api/me`
 
-Authentication required. Updates only the authenticated user's own profile. Accepted optional fields are `firstName`, `lastName`, `phone`, and `organization`; farmer-role accounts may also update `farmName` (120 characters maximum) and `province` (60 characters maximum). Learner- and farmer-role accounts may also update `candidateVisible` (boolean), `candidateDesiredRole` (120 characters maximum), `candidateProvince` (60 characters maximum), and `candidateSummary` (500 characters maximum). Candidate visibility defaults to false and cannot be enabled without a desired role. Setting it to false immediately removes the profile from employer search. Send at least one field. Names are required when provided and limited to 80 characters. Phone numbers must be valid South African numbers and unique across accounts; send an empty string to clear the optional phone. Organisation is limited to 160 characters; send an empty string to clear it. Returns `{ "user": <updated sanitized user> }`.
+Authentication required. Updates only the authenticated user's own profile. Accepted optional fields are `firstName`, `lastName`, `phone`, and `organization`; farmer-role accounts may also update `farmName` (120 characters maximum) and `province` (60 characters maximum). Learner- and farmer-role accounts may also update `candidateVisible` (boolean), `candidatePassportVisible` (boolean), `candidateDesiredRole` (120 characters maximum), `candidateProvince` (60 characters maximum), and `candidateSummary` (500 characters maximum). Candidate visibility defaults to false and cannot be enabled without a desired role. Setting it to false immediately removes the profile from employer search and revokes Passport-sharing consent. Passport sharing is a separate, optional consent and requires candidate visibility. Send at least one field. Names are required when provided and limited to 80 characters. Phone numbers must be valid South African numbers and unique across accounts; send an empty string to clear the optional phone. Organisation is limited to 160 characters; send an empty string to clear it. Returns `{ "user": <updated sanitized user> }`.
 
 The account ID is derived from the verified token, so request bodies cannot select another user. Email, username, roles, active role, permissions, account status, and role-verification details are not editable here. Account creation, activation, deactivation, role assignment, and account deletion remain administrator-controlled. Returns `400` for invalid fields, `401` when unauthenticated, and `409` if the phone number is already in use.
 
 Farm profile fields are separate editable profile information; changing them does not alter the original role-verification record or its reference.
 
-Learner/farmer `GET /api/me` responses include the account holder's own candidate-profile settings, including when visibility is off. Employer candidate discovery exposes only the first name, consented profile fields, and self-reported Skills Passport skills; contact details, account email, surname, organisation, and documents are not shared.
+Learner/farmer `GET /api/me` responses include the account holder's own candidate-profile settings, including when visibility is off. Employer candidate discovery exposes only the first name, consented profile fields, and self-reported Skills Passport skills; contact details, account email, surname, organisation, and documents are not shared. Applicants separately control employer access to their Passport during eligible applications.
 
 ### `POST /api/auth/logout`
 
-Authentication required. Returns `{ "message": "Logged out successfully." }` and revokes the token in this server process. The client also deletes its locally stored token. Revocation is held in memory and is lost when the server restarts, including when Neon is enabled.
+Authentication required. Returns `{ "message": "Logged out successfully." }`, revokes the presented token immediately in the API process, and stores only its SHA-256 hash and expiry in Neon so the revocation survives an API restart. If durable persistence fails, the request returns an error while the in-process revocation remains active. The client calls this endpoint and deletes its local token even if the request fails. If the API cannot confirm revocation, the client still signs out locally and warns that the token may remain valid until expiry.
 
 ## Dashboards and directory
 
@@ -169,7 +178,7 @@ Authentication required. Returns `{ "opportunities": [...], "serverDate": "..." 
 - `status`: `Open` or `Closed`.
 - `sort`: `deadline` (default; undated opportunities sort last), `title`, or `newest`.
 
-Only `Published` opportunities that are open and eligible for the authenticated account's assigned role are returned. Provider listings additionally require the owning provider account to remain active and administrator-verified. A record is published only after administrator approval and publication. Listings past their application deadline are treated as closed and excluded from browsing, details, bookmarks, and applications.
+Published opportunities that are open or upcoming and eligible for the authenticated account's assigned role are returned. Upcoming listings are visible before their application opening date, but applications are accepted only while the application period is open. Provider listings additionally require the owning provider account to remain active and administrator-verified. A record is published only after administrator approval and publication. Listings past their application deadline are treated as closed and excluded from browsing, details, bookmarks, and applications.
 
 The development server includes clearly labeled synthetic learner examples for funding, learnership, internship, and job discovery. These records exist only to exercise in-app search and application tracking; they are not real offers, employers, deadlines, or official programme data. No external official data source is connected.
 
@@ -216,12 +225,15 @@ Employer funding and training support is not connected to a live funder feed. Th
 
 ### Administrator opportunity management
 
-- `GET /api/admin/opportunities` — administrator-only list, with optional `status` and `q` filters. Includes approval history and effective closed status.
-- `POST /api/admin/opportunities` — create administrator-managed bursary, learnership, funding, or other opportunity content as a draft.
+- `GET /api/admin/opportunities` — administrator-only list, with optional `status` and `q` filters. Includes approval history, effective closed status, and counts of non-draft, non-withdrawn applications.
+- `GET /api/admin/opportunities/:id/applications` — administrator-only applicant list for a published opportunity. Returns applicant name, application reference, submitted date, and status; access is audited. Contact details, application answers, and documents are not included.
+- `POST /api/admin/opportunities` — create administrator-managed opportunity content. Omit `action` or use `"draft"` to save a draft; use `"approve"` to create an approved listing that still requires the separate `publish` action. The expanded form may include category-specific `opportunityDetails`, `eligibilityCriteria`, `applicationConfiguration`, and up to 20 `applicationQuestions`.
 - `PATCH /api/admin/opportunities/:id` — administrator-only content editing and state transitions. Supported review actions: `approve`, `reject`, `request_changes`, `publish`, `unpublish`, `close`, `archive`, and `edit` where available for the current status. Rejection and change requests require a review note. `publish` is allowed only after approval; provider submissions also require an active, verified provider account. `unpublish` returns a listing to `Approved`. Editing a non-published listing returns it to `Draft`.
 
 Important review, publication, and edit actions are recorded in the audit log and each listing retains a status history. Administrator approval does not verify a provider's accreditation or replace independent source checks.
-Administrator opportunity forms also accept up to five `requiredDocuments` labels; applicants upload a file for each before submission.
+The mobile administrator form has seven steps for basic information, category details, eligibility, application setup, required documents, review settings, and preview. It preserves entries when moving between steps and supports saving incomplete drafts. Approval requires complete core fields and category details when the expanded form is used. Application opening dates are enforced before applicants can apply.
+
+`applicationConfiguration` supports an opening date, maximum application count, applicant information requirements, terms, draft/edit/withdraw settings, and private review instructions. Public opportunity responses omit reviewer department and review instructions. `applicationQuestions` supports short/long text, dropdown, multiple choice, checkboxes, date, and number answers; answers are validated against the published question schema. Up to five `requiredDocuments` labels can be configured; applicants must upload each required file before submission. Document uploads are limited to PDF, JPG, or PNG, 2 MB per file and 5 MB total.
 
 ## AgriLearn
 
@@ -243,19 +255,27 @@ Returns course details, the current account's saved state, and its own existing 
 
 Returns the programme types and counts from visible course listings.
 
+### Administrator Learning Programme Management
+
+- `GET /api/learning/admin/dashboard` — administrator-only current programme, enrolment, completion, and recent assigned-material summary.
+- `POST /api/learning/admin/programmes` — administrator-only programme creation using an active provider record, category, programme type, eligible roles, dates, facilitator, and optional capacity. The programme may be created as `Draft` or published immediately. These records use the existing course catalogue and database collection.
+- `PATCH /api/learning/admin/programmes/:id` — administrator-only `{ "action": "publish" | "unpublish" | "archive" }` for administrator-managed programmes. A programme with active enrolments cannot be unpublished.
+- `POST /api/learning/admin/enrollments` — retired; administrators receive `403`. Administrators publish programmes, and eligible users submit their own enrolment requests using `POST /api/learning/enrollments`. Published administrator-managed programmes enable enrolment for eligible roles; capacity and duplicate requests are checked by the server.
+- `PATCH /api/learning/admin/enrollments/:id` — administrator-only `{ "action": "withdraw", "reason": "..." }`; requires a 5–500 character reason, records the status history and audit event, notifies the learner, and revokes access to programme-assigned materials.
+
 ### `GET /api/learning/providers` and `GET /api/learning/providers/:id`
 
 Returns public provider-directory fields and associated programmes. Provider contact details and ownership identifiers are not exposed. The optional list filters are `q`, `location`, `category`, and `programmeType`. Unverified demonstration records are explicitly labelled.
 
 ### `GET /api/learning/resources` and `GET /api/learning/resources/:id`
 
-Lists and displays in-app text guides, including general guides for crop scouting, soil and livestock observations, funding readiness, and comparing market offers. The list supports `q` and `category`. These guides are not professional, veterinary, or farm-specific advice. No live market prices, verified buyer listings, live funding feed, file downloads, or external video links are provided. `POST /api/learning/resources/:id/started` adds a guide to the authenticated user's learning list idempotently; it does not mark the guide complete.
+Lists and displays learning materials for authenticated users. The list supports `q`, `category`, `programmeType`, and `programmeId`; catalogue responses include file metadata only. Administrator list responses additionally include basic linked programme metadata for filtering published materials in the Courses view; this metadata is not returned to other roles. Resource details include text content and file metadata, but never file bytes. Draft materials are visible only to administrators. Materials assigned to an administrator-managed programme are visible only to its active enrollees (and administrators); the same access check applies to direct resource, attachment, and started-resource requests. Administrator-published files are limited to PDF, JPG, and PNG, up to 2 MB per file. These materials are not professional, veterinary, or farm-specific advice. `GET /api/learning/resources/:id/attachment` returns the attached file only to an authorized account. `POST /api/learning/resources/:id/started` adds the material to the authenticated user's learning list idempotently; it does not mark the material complete.
 
 Farmer funding, training, support, and mentorship opportunity listings must be source-attributed and expiry-dated before an administrator can approve or publish them. Farmer listing responses include source name/URL, check date, and expiry; expired listings are not returned as open. An optional `applicationUrl` must be a credential-free HTTP(S) URL. When provided, eligible users can open the organisation's application page; the separate in-app application tracker does not submit data to that organisation.
 
 ### `GET /api/learning/me`
 
-Returns only the authenticated account's course enrolments/requests, saved courses, started guides, module progress, course progress, and certificates. Course progress records show the number of passed modules and whether all prototype modules have been completed. Certificates are not issued by this prototype.
+Returns only the authenticated account's course enrolments/requests, saved courses, started guides, module progress, course progress, and certificates. For the administrator active role, learning lists are empty. Course progress records show the number of passed modules and whether all prototype modules have been completed. Certificates are not issued by this prototype.
 
 ### `GET /api/learning/enrollments/:id/coursework`
 
@@ -271,7 +291,7 @@ Accepts an `answers` object keyed by question ID and option ID. The server valid
 
 ### `POST /api/learning/courses/:id/saved` and `DELETE /api/learning/courses/:id/saved`
 
-Adds or removes the current account's course bookmark. Saved courses persist with Neon enabled.
+Adds or removes the current account's course bookmark. Only learner, farmer, employer, and SDF active roles may use these endpoints; administrators receive `403`. Saved courses persist with Neon enabled.
 
 ### `POST /api/learning/enrollments`
 
@@ -279,7 +299,11 @@ Learner, farmer, employer, and SDF accounts may enrol in or request an eligible 
 
 ### `POST /api/learning/resources/:id/started`
 
-Authentication required. Records the authenticated user's start of an existing in-app guide and returns `{ "progress": ... }`. Repeating the request returns the same record; it cannot start a guide for another account or mark it complete.
+Authentication required. Learner, farmer, employer, and SDF active roles can record their start of an existing learning resource and receive `{ "progress": ... }`. Repeating the request returns the same record; it cannot start a resource for another account or mark it complete. Administrators receive `403` and cannot add materials to My learning.
+
+### `POST /api/learning/resources` and `DELETE /api/learning/resources/:id`
+
+Administrator-only learning material management. Creation requires a title, summary, category ID, and valid `programmeType`; provide one to twelve text paragraphs, an optional attached file, or both. `publicationStatus` can be `Draft` or `Published` (defaults to `Published`). To restrict material to an administrator-managed programme, include its published `programmeId`. Attached files must be PDF, JPG, or PNG, with a matching file signature, and no larger than 2 MB. Assigned material is visible only to active programme enrollees and administrators. `PATCH /api/learning/resources/:id` lets an administrator publish or unpublish a material using `{ "publicationStatus": "Published" | "Draft" }`. Creation/list/detail responses return attachment metadata only; download file bytes from the authenticated attachment endpoint. Programme publication and material publication are audited; material publication creates in-app notifications for current enrollees.
 
 ## Farmer-curated information
 
@@ -316,17 +340,21 @@ Administrator and internal-staff roles can review enrolment requests. A training
 - `GET /api/learning/admin/review` — submitted course listings and open requests for published courses; administrator or internal staff. Only administrators can change a course's review status.
 - `PATCH /api/learning/courses/:id/status` — administrator review transitions: `Pending Review` → `Approved` or `Rejected`; `Approved` → `Published`, `Rejected`, or `Archived`; `Published` → `Approved` (unpublish) or `Archived`. Rejection requires a reason. Published courses and labeled demonstration courses appear in catalogues. Publication does not establish accreditation.
 - `POST`, `PATCH`, and `DELETE /api/learning/categories` (with `/:id` for updates/deletion) — administrator-only category management. Categories in use cannot be deleted.
-- `POST /api/learning/resources` and `DELETE /api/learning/resources/:id` — administrator-only in-app guide management.
+- `POST /api/learning/resources` and `DELETE /api/learning/resources/:id` — administrator-only programme learning material management.
 
 An administrator approving a training-provider role request creates a private provider profile for completion. An administrator must review and publish that profile before the provider's course listings can be published. Learners must explicitly consent before their name and email are shared with a provider for an enrolment request. The provider can manage the request and record progress only after accepting the learner. Providers can also submit `Training`, `Learnership`, `Training Service`, and `Training Partnership` opportunities through `/api/provider/opportunities`; eligible provider-support opportunities can be applied for through the existing application workflow. These are in-app records and are not submitted to external funders or AgriSETA.
 
 ## Skills Passport
 
-The skills passport records learner-entered capability notes. Entries are always labeled `Self-reported · not verified`; they are not credentials, official qualifications, or independently validated skills. Only learner, farmer, SDF, administrator, and internal-staff roles can access their own passport records.
+Learners and farmers can manage their own self-reported skills and Passport records. Submitted records can include supporting PDF, JPG, or PNG files (up to five per record, 2 MB each and 5 MB total). Uploaded files are private to the account owner and administrators; access by administrators is audited. Admin review status is not an issuer verification or official accreditation.
 
 ### `GET /api/passport`
 
-Returns `{ "skills": [...], "certificates": [...] }` for the authenticated account only. Certificate records are included only if a trusted source has populated them; the prototype does not issue certificates.
+Learner/farmer only. Returns `{ "skills": [...], "certificates": [...], "records": [...] }` for the authenticated account only. Record document metadata is returned without file content. Certificate records are included only if a trusted source has populated them; the prototype does not issue certificates.
+
+### `GET /api/passport/me/summary`
+
+Learner/farmer only. Returns counts of the account holder's own skills, qualifications, and credentials for the role dashboard.
 
 ### `POST /api/passport/skills`
 
@@ -335,6 +363,26 @@ Creates an account-owned self-reported skill. Required fields: `name` (2–80 ch
 ### `PATCH /api/passport/skills/:id` and `DELETE /api/passport/skills/:id`
 
 Update or remove a skill owned by the authenticated user. Another user's or unknown skill returns `404`. The verification status cannot be set by the user and remains self-reported.
+
+### `POST /api/passport/records`
+
+Learner/farmer only. Creates an owned Passport record of type `qualification`, `training`, `experience`, or `achievement`. Required field: `title` (2–120 characters). Optional fields include `organisation`, `category`, `level`, `description`, `startDate`, `endDate`, `hours`, and `documents`. Dates must use valid `YYYY-MM-DD` values. Submit `action: "save"` for a draft or `action: "submit"` to enter the administrator verification queue. Users may update their own draft, rejected, or returned-for-information records by including the record `id`; only such records may be edited. A submitted record receives a generated reference and status `Pending Verification`.
+
+### `GET /api/passport/records/:id/documents/:documentId`
+
+Available to the record owner and administrators only. Returns a document's metadata and base64 data. Administrator access is audited. Other roles cannot retrieve supporting documents.
+
+### `GET /api/admin/passport/verifications`
+
+Administrator only. Returns submitted, under-review, and returned records with minimal owner identity needed for review. Each decision is retained in verification history.
+
+### `PATCH /api/admin/passport/verifications/:id`
+
+Administrator only. `decision` must be `verify`, `reject`, `request_information`, or `review`. Reject requires a reason; requesting information requires one or more listed requirements. The owner receives an in-app notification. These decisions document the administrator's platform review and are not an external credential verification.
+
+### `GET /api/employer/applications/:id/passport`
+
+Employer only. Returns limited skills, qualifications, experience, and credential metadata for an applicant on the employer's own eligible opportunity, only while the applicant has opted in to Passport sharing. Supporting documents and private notes are excluded. Access is audited. Revoking consent or candidate visibility immediately blocks retrieval.
 
 ## Applications Management
 
@@ -394,12 +442,13 @@ Employer recruitment status updates use the separate `PATCH /api/employer/applic
 ### `GET /api/notifications`
 
 Authentication required. Returns shared announcements and notifications scoped to the signed-in account. User-specific workflow notices include a `canMarkRead` flag.
-When `BREVO_EMAIL_ENABLED=true`, account-scoped notifications are also emailed through Brevo SMTP. Administrator decisions are emailed as soon as the application status update is processed; final decisions use an “Application approved” or “Application rejected” subject. Responses include `emailDeliveryStatus` (`pending`, `sent`, `failed`, or `disabled`) and, on failure, a safe `emailDeliveryError` for the owner's own notification. `sent` means Brevo SMTP accepted the message; it does not confirm delivery to the mailbox. In-app notifications remain available if delivery fails. SMTP delivery still depends on valid Brevo credentials, sender verification, and any required authorized-IP settings.
+When `BREVO_EMAIL_ENABLED=true`, account-scoped notifications are also emailed through Brevo SMTP. Administrator decisions are emailed as soon as the application status update is processed to the applicant's registered account email; a manual retry targets the signed-in account's registered email. Final decisions use an “Application approved” or “Application rejected” subject. Responses include `emailDeliveryStatus` (`pending`, `sent`, `failed`, or `disabled`) and, on failure, a safe `emailDeliveryError` for the owner's own notification. For account-specific notifications, `emailDeliveryRecipient` shows the signed-in user's own registered email address so they can verify the destination. `sent` means the SMTP server explicitly accepted the recipient; it does not confirm delivery to the mailbox. `emailDeliveryMessageId` is generated by Nodemailer and is not a Brevo delivery-log reference. `emailDeliveryAttemptedAt` records when sending was attempted. In-app notifications remain available if delivery fails. SMTP delivery still depends on valid Brevo credentials, sender verification, and any required authorized-IP settings.
+Application review emails include outstanding document or information requirements when the status is `Additional Information Required`. Demonstration notifications are labeled as samples and are not emailed.
 Notifications may include a `targetType` and `targetId` so the app can route the signed-in user to the related application, opportunity, mentor requests, or relevant section.
 
-### `POST /api/notifications/resend-application-status`
+### `POST /api/notifications/resend-email`
 
-Authentication required. Resends the signed-in account's application status notifications that have not been successfully submitted to Brevo. Messages are sent only to that account's registered email address; another account's notices cannot be selected. Returns the `sentCount` and `failedCount`. Returns `503` if Brevo email is disabled.
+Authentication required. Resends the signed-in account's notifications that have not been successfully submitted to Brevo, as well as legacy notices marked sent without a Brevo message reference. A retry of a legacy notice may duplicate a message if Brevo accepted the original. Messages are sent only to that account's registered email address; another account's notices cannot be selected. Returns the `sentCount` and `failedCount`. Returns `503` if Brevo email is disabled. The legacy `/api/notifications/resend-application-status` path remains supported.
 
 ### `PATCH /api/notifications/:id/read`
 
@@ -466,8 +515,8 @@ The response includes application form answers and document metadata, but never 
 ## Operational and implementation limits
 
 - Neon PostgreSQL is the only supported database. `DATABASE_URL` is mandatory in every environment; the API startup fails if it is missing, invalid, or the database cannot be reached. Users, services, opportunities, applications (including uploaded files), bookmarks, notifications, and audit entries are stored in Neon. Configure data protection and protected backups before handling real applicant documents. Existing MongoDB data is not migrated automatically. The current API keeps a process-local read cache; run one instance only.
-- Logout revokes the token in this server process; revocation state is in memory and resets on restart. Administrator password changes invalidate existing tokens. Self-service password reset and refresh tokens are not configured.
+- Logout revokes the token in the current API process and persists its hash and expiry in Neon, so it remains revoked after restart. Revocations are loaded at startup and expired entries are removed. Administrator password changes and emailed password resets also invalidate existing tokens. Self-service password reset requires Brevo email to be enabled. Refresh tokens are not configured.
 - Administrators assign roles based on their own approval process. Role assignment does not independently verify a user's identity or role references against official sources.
-- CORS currently allows requests from any origin. Restrict it before deployment.
-- The server uses a development fallback for `JWT_SECRET`; configure a strong secret outside local development.
+- CORS allows configured `CLIENT_URL` origins and the known local Expo origins outside production; set `CLIENT_URL` to the approved web origins in production.
+- The server refuses to start without `JWT_SECRET` outside automated tests and requires at least 32 characters in production.
 - See [SYSTEM.md](./SYSTEM.md) for architecture, configuration, local setup, and known production blockers.

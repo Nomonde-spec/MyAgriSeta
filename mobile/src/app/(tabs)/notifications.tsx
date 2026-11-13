@@ -15,8 +15,12 @@ type NotificationItem = {
   message: string;
   read: boolean;
   canMarkRead: boolean;
+  isDemo?: boolean;
   emailDeliveryStatus?: string;
   emailDeliveryError?: string;
+  emailDeliveryRecipient?: string;
+  emailDeliveryAttemptedAt?: string;
+  emailDeliveryMessageId?: string;
   targetType?: string;
   targetId?: string;
   opportunityId?: string;
@@ -134,34 +138,34 @@ export default function NotificationsScreen() {
     }
   };
 
-  const resendApplicationStatusEmails = async () => {
+  const resendNotificationEmails = async () => {
     if (emailBusy) return;
     setEmailBusy(true);
     setEmailMessage('');
     setError('');
     try {
       const result = await apiFetch<{ sentCount: number; failedCount: number }>(
-        '/notifications/resend-application-status',
+        '/notifications/resend-email',
         { method: 'POST' }
       );
       await loadNotifications();
       setEmailMessage(
         result.failedCount
-          ? `Emailed ${result.sentCount} update(s); ${result.failedCount} could not be sent.`
+          ? `Emailed ${result.sentCount} notification(s); ${result.failedCount} could not be sent.`
           : result.sentCount
-            ? `Emailed ${result.sentCount} application update(s) to your registered email address.`
-            : 'There are no existing application updates that need emailing.'
+            ? `Emailed ${result.sentCount} notification(s) to your registered email address.`
+            : 'There are no existing notifications that need emailing.'
       );
     } catch (cause) {
-      setEmailMessage(cause instanceof Error ? cause.message : 'Application updates could not be emailed.');
+      setEmailMessage(cause instanceof Error ? cause.message : 'Notifications could not be emailed.');
     } finally {
       setEmailBusy(false);
     }
   };
 
-  const hasUnsentApplicationUpdates = items.some((item) =>
-    ['Application status updated', 'Application approved', 'Application rejected', 'Recruitment application updated'].includes(item.title) &&
-    item.emailDeliveryStatus !== 'sent'
+  const hasUnsentNotifications = items.some((item) =>
+    !item.isDemo && !item.isAnnouncement &&
+    (item.emailDeliveryStatus !== 'sent' || !item.emailDeliveryMessageId)
   );
 
   if (loading) {
@@ -185,16 +189,16 @@ export default function NotificationsScreen() {
           persistentScrollbar
         >
           <Text style={styles.heading}>Notifications</Text>
-        {hasUnsentApplicationUpdates ? (
+        {hasUnsentNotifications ? (
           <View style={styles.emailPanel}>
-            <Text style={styles.emailInfo}>Application updates can be emailed to the address registered to your account.</Text>
+            <Text style={styles.emailInfo}>Retry notifications without a Brevo message reference. A retry may duplicate a message if Brevo accepted the original.</Text>
             <Pressable
               accessibilityRole="button"
               disabled={emailBusy}
-              onPress={() => void resendApplicationStatusEmails()}
+              onPress={() => void resendNotificationEmails()}
               style={styles.readButton}
             >
-              <Text style={styles.readButtonText}>{emailBusy ? 'Sending…' : 'Email existing application updates'}</Text>
+              <Text style={styles.readButtonText}>{emailBusy ? 'Sending…' : 'Retry unconfirmed email'}</Text>
             </Pressable>
           </View>
         ) : null}
@@ -223,12 +227,26 @@ export default function NotificationsScreen() {
                   <Text style={styles.openLink}>View related details</Text>
                 </Pressable>
                 <Text style={styles.readStatus}>{item.read ? 'Read' : 'Unread'}</Text>
-                {item.emailDeliveryStatus === 'sent' ? (
-                  <Text style={styles.emailStatus}>Accepted by Brevo SMTP; inbox delivery is not confirmed.</Text>
+                {item.isDemo ? (
+                  <Text style={styles.emailStatus}>Sample notification for demonstration; no email was sent.</Text>
+                ) : item.emailDeliveryStatus === 'sent' ? (
+                  <View>
+                    <Text style={styles.emailStatus}>
+                      Accepted by Brevo SMTP for {item.emailDeliveryRecipient || 'your registered account email'}{item.emailDeliveryAttemptedAt ? ` at ${item.emailDeliveryAttemptedAt}` : ''}; inbox delivery is not confirmed.
+                    </Text>
+                    {item.emailDeliveryMessageId ? (
+                      <Text selectable style={styles.emailStatus}>Mailer-generated ID (not a Brevo delivery-log reference): {item.emailDeliveryMessageId}</Text>
+                    ) : null}
+                  </View>
                 ) : item.emailDeliveryStatus === 'failed' ? (
-                  <Text accessibilityRole="alert" style={styles.emailError}>
-                    {item.emailDeliveryError || 'Email was not accepted by Brevo. Use the retry option above after checking its SMTP configuration.'}
-                  </Text>
+                  <View>
+                    <Text accessibilityRole="alert" style={styles.emailError}>
+                      {item.emailDeliveryError || 'Email was not accepted by Brevo. Use the retry option above after checking its SMTP configuration.'}
+                    </Text>
+                    {item.emailDeliveryRecipient ? (
+                      <Text style={styles.emailStatus}>Attempted recipient: {item.emailDeliveryRecipient}</Text>
+                    ) : null}
+                  </View>
                 ) : item.emailDeliveryStatus === 'disabled' ? (
                   <Text style={styles.emailStatus}>Email delivery was disabled when this notice was created.</Text>
                 ) : null}

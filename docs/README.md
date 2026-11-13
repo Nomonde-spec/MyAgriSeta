@@ -12,6 +12,7 @@ This repository contains a React Native Expo mobile app and an Express backend p
 - [Setup guide](./SETUP.md) — local backend and Expo setup.
 - [Testing guide](./TESTING.md) — current test commands and manual smoke checks.
 - [Architecture notes](./ARCHITECTURE.md)
+- [Visual architecture guide](./MYAGRISETA-VISUAL-ARCHITECTURE.pdf) — seven-page system and workflow diagrams.
 - [Database notes](./DATABASE.md)
 - [Deployment guidance](./DEPLOYMENT.md)
 

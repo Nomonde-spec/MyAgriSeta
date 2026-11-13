@@ -211,6 +211,7 @@ const courseProgress = [];
 const moduleProgress = [];
 const certificates = [];
 const passportSkills = [];
+const passportRecords = [];
 
 module.exports = {
   categories,
@@ -228,4 +229,5 @@ module.exports = {
   moduleProgress,
   certificates,
   passportSkills,
+  passportRecords,
 };

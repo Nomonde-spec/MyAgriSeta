@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -25,6 +26,7 @@ type Report = {
 };
 
 export default function AuditScreen() {
+  const { section } = useLocalSearchParams<{ section?: string }>();
   const { session } = useAuth();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,6 +34,7 @@ export default function AuditScreen() {
   const [retry, setRetry] = useState(0);
   const [period, setPeriod] = useState<7 | 30 | 90 | 0>(30);
   const [report, setReport] = useState<Report | null>(null);
+  const activityOnly = section === 'activity';
 
   useEffect(() => {
     let isCurrent = true;
@@ -83,8 +86,10 @@ export default function AuditScreen() {
           showsVerticalScrollIndicator
           persistentScrollbar
         >
-          <Text style={styles.heading}>Audit history</Text>
-          <Text style={styles.meta}>Generate an aggregate platform activity report for a selected period.</Text>
+          <Text style={styles.heading}>{activityOnly ? 'Platform & user activity' : 'Reports, statistics & audit logs'}</Text>
+          <Text style={styles.meta}>{activityOnly
+            ? 'Review recorded user and administrator activity for a selected period. Infrastructure performance monitoring is not available here.'
+            : 'Generate aggregate account, application, opportunity, and administrative activity reports for a selected period.'}</Text>
           <View style={styles.periodChoices}>
             {([
               [7, '7 days'],
@@ -97,7 +102,7 @@ export default function AuditScreen() {
               </Pressable>
             ))}
           </View>
-          {report ? (
+          {!activityOnly && report ? (
             <View style={styles.reportCard}>
               <Text style={styles.reportHeading}>Platform report</Text>
               <Text style={styles.meta}>Generated: {new Date(report.generatedAt).toLocaleString()}</Text>

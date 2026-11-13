@@ -11,6 +11,7 @@
 mobile/.expo/
 mobile/dist/
 mobile/web-build/
+mobile/build/*.apk
 
 # Local editor and temporary Office files
 **/.claude/

@@ -1,5 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 import { Image } from 'expo-image';
+import * as FileSystem from 'expo-file-system/legacy';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -21,6 +23,7 @@ import {
   LearnerSidebarMenuButton,
 } from '@/components/navigation/learner-sidebar';
 import { AppRole, useAuth } from '@/context/auth-context';
+import { downloadLearningResourceAttachment } from '@/lib/application-documents';
 import { apiFetch } from '@/lib/api';
 import { palette, radius, spacing } from '@/theme';
 
@@ -35,6 +38,7 @@ type ProviderSummary = {
   dataStatus: string;
   programmes: { id: string; title: string; programmeType: string; categoryId?: string }[];
 };
+
 type ProviderProfile = Omit<ProviderSummary, 'programmes'> & {
   profileStatus?: string;
   pendingProfileChanges?: { name: string; location: string; description: string } | null;
@@ -77,10 +81,31 @@ type LearningResource = {
   id: string;
   title: string;
   categoryId: string;
+  programmeId?: string;
+  programmeType?: string;
+  publicationStatus?: string;
+  uploadedAt?: string;
+  programme?: {
+    title: string;
+    programmeType: string;
+    categoryId: string;
+    deliveryMethod: string;
+    location: string;
+    duration: string;
+    status: string;
+    providerId: string;
+  };
   format: string;
   summary: string;
   content?: string[];
+  attachment?: { filename: string; mimeType: string; size: number };
   dataStatus: string;
+};
+type LearningResourceUploadAttachment = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  data: string;
 };
 type LearningHome = {
   enrollments: Enrollment[];
@@ -152,7 +177,12 @@ export default function LearningScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const width = Math.min(windowWidth, 520);
   const [section, setSection] = useState<Section>(
-    () => standardSections.find((item) => item === params.section) ?? 'Courses'
+    () => session?.activeRole === 'training_provider'
+      ? 'Provider tools'
+      : standardSections.find((item) =>
+      item === params.section &&
+      !(session?.activeRole === 'administrator' && ['My learning', 'Programmes', 'Providers', 'Resources'].includes(item))
+    ) ?? 'Courses'
   );
   const [search, setSearch] = useState('');
   const [showSavedOnly, setShowSavedOnly] = useState(false);
@@ -160,6 +190,9 @@ export default function LearningScreen() {
   const [providerFilter, setProviderFilter] = useState('');
   const [deliveryFilter, setDeliveryFilter] = useState('');
   const [programmeFilter, setProgrammeFilter] = useState('');
+  const [resourceProgrammeFilter, setResourceProgrammeFilter] = useState('');
+  const [resourceSearch, setResourceSearch] = useState('');
+  const [resourceCategoryFilter, setResourceCategoryFilter] = useState('');
   const [durationFilter, setDurationFilter] = useState('');
   const [availabilityFilter, setAvailabilityFilter] = useState('');
   const [sort, setSort] = useState('newest');
@@ -187,17 +220,41 @@ export default function LearningScreen() {
   const [resourceDetail, setResourceDetail] = useState<LearningResource | null>(null);
   const [detailError, setDetailError] = useState('');
   const [detailBusy, setDetailBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [learnerNavOpen, setLearnerNavOpen] = useState(false);
   const [applicantNote, setApplicantNote] = useState('');
   const [acknowledgedDemo, setAcknowledgedDemo] = useState(false);
   const [shareWithProvider, setShareWithProvider] = useState(false);
   const [detailFeedback, setDetailFeedback] = useState('');
-  const visibleSections: Section[] = [
-    ...standardSections,
-    ...(session?.activeRole === 'training_provider' ? ['Provider tools' as const] : []),
-    ...(session?.activeRole === 'administrator' ? ['Learning administration' as const] : []),
-    ...(session?.activeRole === 'internal_staff' ? ['Learning review' as const] : []),
-  ];
+  const isAdministrator = session?.activeRole === 'administrator';
+  const visibleSections: Section[] = session?.activeRole === 'training_provider'
+    ? ['Provider tools']
+    : [
+      ...standardSections.filter((item) =>
+        !isAdministrator || !['My learning', 'Programmes', 'Providers', 'Resources'].includes(item)
+      ),
+      ...(isAdministrator ? ['Learning administration' as const] : []),
+      ...(session?.activeRole === 'internal_staff' ? ['Learning review' as const] : []),
+    ];
+
+  useEffect(() => {
+    const requestedSection = params.section;
+    const canOpenSection = typeof requestedSection === 'string' && (
+      (standardSections.includes(requestedSection as typeof standardSections[number]) &&
+        !(session?.activeRole === 'administrator' &&
+          ['My learning', 'Programmes', 'Providers', 'Resources'].includes(requestedSection))) ||
+      (requestedSection === 'Learning administration' && isAdministrator) ||
+      (requestedSection === 'Learning review' && session?.activeRole === 'internal_staff') ||
+      (requestedSection === 'Provider tools' && session?.activeRole === 'training_provider')
+    );
+    const nextSection = canOpenSection
+      ? requestedSection as Section
+      : session?.activeRole === 'training_provider'
+        ? 'Provider tools'
+        : 'Courses';
+    const frame = requestAnimationFrame(() => setSection(nextSection));
+    return () => cancelAnimationFrame(frame);
+  }, [params.section, isAdministrator, session?.activeRole]);
 
   const courseParams = useMemo(() => {
     const query = new URLSearchParams();
@@ -329,19 +386,56 @@ export default function LearningScreen() {
     return () => { active = false; };
   }, [resourceId, session]);
 
-  const visibleResources = resources.filter((resource) => {
+  const publishedCourses = isAdministrator
+    ? courses.filter((course) => course.status === 'Published')
+    : courses;
+  const publishedCourseIds = new Set(publishedCourses.map((course) => course.id));
+  const publishedProgrammeTypes = new Set(publishedCourses.map((course) => course.programmeType));
+  const postedResources = isAdministrator
+    ? resources.filter((resource) => (resource.publicationStatus || 'Published') === 'Published')
+    : [];
+  const visibleCourseMaterials = postedResources.filter((resource) => {
+    const programme = resource.programme;
     const query = search.trim().toLowerCase();
-    return (!categoryId || resource.categoryId === categoryId) &&
-      (!query || `${resource.title} ${resource.summary}`.toLowerCase().includes(query));
+    const searchable = `${resource.title} ${resource.summary} ${resource.format} ${resource.programmeType || ''} ${programme?.title || ''}`.toLowerCase();
+    return (!query || searchable.includes(query)) &&
+      (!categoryId || resource.categoryId === categoryId) &&
+      (!deliveryFilter || programme?.deliveryMethod === deliveryFilter) &&
+      (!programmeFilter || (programme?.programmeType || resource.programmeType) === programmeFilter) &&
+      (!availabilityFilter || (availabilityFilter === 'Published'
+        ? (resource.publicationStatus || 'Published') === 'Published' && (!programme || programme.status === 'Published')
+        : programme?.status === 'Demonstration')) &&
+      (!locationFilter || programme?.location.toLowerCase().includes(locationFilter.toLowerCase())) &&
+      (!durationFilter || programme?.duration.toLowerCase().includes(durationFilter.toLowerCase())) &&
+      (!providerFilter || programme?.providerId === providerFilter);
+  }).sort((left, right) => {
+    if (sort === 'name') return left.title.localeCompare(right.title);
+    if (sort === 'duration') {
+      const leftDuration = Number.parseInt(left.programme?.duration || '', 10) || Number.MAX_SAFE_INTEGER;
+      const rightDuration = Number.parseInt(right.programme?.duration || '', 10) || Number.MAX_SAFE_INTEGER;
+      return leftDuration - rightDuration || left.title.localeCompare(right.title);
+    }
+    return (right.uploadedAt || '').localeCompare(left.uploadedAt || '') || left.title.localeCompare(right.title);
+  });
+  const visibleProgrammes = programmes.filter((programme) =>
+    !isAdministrator || publishedProgrammeTypes.has(programme.courseType)
+  );
+  const visibleResources = resources.filter((resource) => {
+    const query = resourceSearch.trim().toLowerCase();
+    return (!isAdministrator || resource.publicationStatus !== 'Draft') &&
+      (!resourceCategoryFilter || resource.categoryId === resourceCategoryFilter) &&
+      (!resourceProgrammeFilter || resource.programmeId === resourceProgrammeFilter) &&
+      (!query || `${resource.title} ${resource.summary} ${resource.programmeType || ''}`.toLowerCase().includes(query));
   });
   const visibleProviders = providers.filter((provider) => {
     const query = search.trim().toLowerCase();
-    return (!query || `${provider.name} ${provider.description} ${provider.location}`.toLowerCase().includes(query)) &&
+    return (!isAdministrator || provider.programmes.some((programme) => publishedCourseIds.has(programme.id))) &&
+      (!query || `${provider.name} ${provider.description} ${provider.location}`.toLowerCase().includes(query)) &&
       (!locationFilter || provider.location.toLowerCase().includes(locationFilter.toLowerCase())) &&
       (!categoryId || provider.programmes.some((programme) => programme.categoryId === categoryId)) &&
       (!programmeFilter || provider.programmes.some((programme) => programme.programmeType === programmeFilter));
   });
-  const visibleCourses = courses.filter((course) => !showSavedOnly || course.saved);
+  const visibleCourses = publishedCourses.filter((course) => !showSavedOnly || course.saved);
   const coursesLoading = courseResultKey !== courseRequestKey;
   const isDetail = Boolean(courseId || providerId || resourceId);
   const isDesktopCoursePage = width >= 820 && showLearnerSidebar;
@@ -365,6 +459,24 @@ export default function LearningScreen() {
       setDetailFeedback(error instanceof Error ? error.message : 'The guide could not be added to My learning.');
     } finally {
       setDetailBusy(false);
+    }
+  };
+
+  const downloadLearningMaterial = async (resource: LearningResource) => {
+    if (!resource.attachment) return;
+    setDownloadBusy(true);
+    setDetailFeedback('');
+    try {
+      await downloadLearningResourceAttachment(
+        resource.id,
+        resource.attachment.filename,
+        resource.attachment.mimeType
+      );
+      setDetailFeedback('The learning material is ready to open or save.');
+    } catch (error) {
+      setDetailFeedback(error instanceof Error ? error.message : 'The learning material could not be downloaded.');
+    } finally {
+      setDownloadBusy(false);
     }
   };
 
@@ -449,13 +561,12 @@ export default function LearningScreen() {
   };
   const openProvider = (id: string) => router.push({ pathname: '/learning', params: { providerId: id } });
   const openResource = (id: string) => router.push({ pathname: '/learning', params: { resourceId: id } });
-  const selectCategory = (id: string) => {
-    setCategoryId(id);
-    setSection('Courses');
-  };
   const clearFilters = () => {
     setSearch('');
     setCategoryId('');
+    setResourceProgrammeFilter('');
+    setResourceSearch('');
+    setResourceCategoryFilter('');
     setProviderFilter('');
     setDeliveryFilter('');
     setProgrammeFilter('');
@@ -589,6 +700,8 @@ export default function LearningScreen() {
               resourceDetail={resourceId && resourceDetail?.id === resourceId ? resourceDetail : null}
               detailError={detailError}
               detailBusy={detailBusy}
+              downloadBusy={downloadBusy}
+              isAdministrator={isAdministrator}
               feedback={detailFeedback}
               applicantNote={applicantNote}
               acknowledgedDemo={acknowledgedDemo}
@@ -602,6 +715,7 @@ export default function LearningScreen() {
               onSaveCourse={toggleSavedCourse}
               onSubmitEnrollment={(draft) => void submitEnrollment(draft)}
               onStartResource={() => void startResource(resourceId)}
+              onDownloadResource={(resource) => void downloadLearningMaterial(resource)}
               onOpenCourse={openCourse}
             />
           ) : (
@@ -672,7 +786,11 @@ export default function LearningScreen() {
                 <>
                   <SectionHeading
                     title={showSavedOnly ? 'Saved courses' : 'Explore agricultural courses'}
-                    subtitle={showSavedOnly ? 'Courses saved to your account.' : 'Search and filter the current course catalogue.'}
+                      subtitle={showSavedOnly
+                        ? 'Courses saved to your account.'
+                        : isAdministrator
+                          ? 'Only published courses are shown.'
+                          : 'Search and filter the current course catalogue.'}
                   />
                   <FilterChips items={[{ id: '', name: 'All topics' }, ...categories]} selectedId={categoryId} onSelect={setCategoryId} />
                   <View style={styles.filterRow}>
@@ -740,76 +858,114 @@ export default function LearningScreen() {
                       <Text style={styles.clearText}>Clear filters</Text>
                     </Pressable>
                   </View>
+                  {isAdministrator ? (
+                    <PostedLearningMaterials
+                      materials={visibleCourseMaterials}
+                      onOpen={openResource}
+                      title="Published materials matching these filters"
+                      emptyMessage="No published materials match these filters."
+                    />
+                  ) : null}
                   <Text style={styles.disclaimer}>
-                    Demonstration catalogue only. Providers and course details are unverified; listings do not confirm course availability, accreditation, or official AgriSETA status.
+                    {isAdministrator
+                      ? 'Only published listings are shown. Publication does not confirm accreditation or official AgriSETA status.'
+                      : 'Demonstration catalogue only. Providers and course details are unverified; listings do not confirm course availability, accreditation, or official AgriSETA status.'}
                   </Text>
                   {coursesLoading ? <ActivityIndicator color={palette.primary} style={styles.inlineLoader} /> : null}
                   {courseError ? <Text accessibilityRole="alert" style={styles.errorText}>{courseError}</Text> : null}
-                  {!coursesLoading && !courseError && visibleCourses.length === 0 ? (
+                  {!coursesLoading && !courseError && visibleCourses.length === 0 &&
+                  (!isAdministrator || visibleCourseMaterials.length === 0) ? (
                     <EmptyState
-                      title={showSavedOnly ? 'No saved courses found' : 'No courses found'}
-                      detail={showSavedOnly ? 'Save a course from the catalogue to see it here.' : 'Try another search or clear some filters.'}
+                      title={showSavedOnly
+                        ? 'No saved courses found'
+                        : isAdministrator
+                          ? 'No published course listings'
+                          : 'No courses found'}
+                      detail={showSavedOnly
+                        ? 'Save a course from the catalogue to see it here.'
+                        : isAdministrator && visibleCourseMaterials.length > 0
+                          ? 'The published guides above are learning materials, not enrolable courses. Course listings need provider and delivery details.'
+                          : 'Try another search or clear some filters.'}
                     />
                   ) : (
-                    <View style={styles.cardGrid}>
+                    <View style={[styles.categoryGrid, styles.courseResultsGrid]}>
                       {visibleCourses.map((course) => (
-                        <CourseCard
+                        <CourseBrowseCard
                           key={course.id}
                           course={course}
-                          width={cardWidth}
                           onOpen={() => openCourse(course.id)}
-                          onSave={() => void toggleSavedCourse(course)}
-                          busy={detailBusy}
+                          isAdministrator={isAdministrator}
                         />
                       ))}
                     </View>
                   )}
-                  <SectionHeading title="Browse by category" subtitle="Choose a topic to filter the catalogue." />
-                  <View style={styles.categoryGrid}>
-                    {categories.map((category) => (
-                      <Pressable
-                        key={category.id}
-                        accessibilityRole="button"
-                        onPress={() => selectCategory(category.id)}
-                        style={styles.categoryCard}
-                      >
-                        <View style={styles.categoryIcon}><Ionicons name={category.icon} size={22} color={palette.primary} /></View>
-                        <Text style={styles.categoryTitle}>{category.name}</Text>
-                        <Text style={styles.categoryDescription}>{category.description}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
                 </>
               ) : null}
 
               {section === 'Programmes' ? (
                 <>
-                  <SectionHeading title="Training programmes" subtitle="Browse the programme types represented in this demonstration catalogue." />
-                  <View style={styles.cardGrid}>
-                    {programmes.map((programme) => (
-                      <Pressable
-                        key={programme.id}
-                        accessibilityRole="button"
-                        onPress={() => {
-                          setProgrammeFilter(programme.courseType);
-                          setSection('Courses');
-                        }}
-                        style={[styles.programmeCard, { width: cardWidth }]}
-                      >
-                        <Ionicons name="school-outline" size={24} color={palette.primary} />
-                        <Text style={styles.courseTitle}>{programme.name}</Text>
-                        <Text style={styles.bodyText}>{programme.description}</Text>
-                        <Text style={styles.metaText}>{programme.courseCount} demonstration listings</Text>
-                        <Text style={styles.linkText}>Browse this programme type →</Text>
-                      </Pressable>
+                  <SectionHeading
+                    title="Training programmes"
+                    subtitle={isAdministrator
+                      ? 'Programme types with published courses.'
+                      : 'Browse the programme types represented in this demonstration catalogue.'}
+                  />
+                  {isAdministrator ? (
+                    <PostedLearningMaterials
+                      materials={postedResources}
+                      onOpen={openResource}
+                      title="Published materials for programmes"
+                    />
+                  ) : null}
+                  {visibleProgrammes.length === 0 ? (
+                    <EmptyState
+                      title={isAdministrator ? 'No published programmes' : 'No programmes found'}
+                      detail={isAdministrator
+                        ? 'Programme types appear here once they have a published course.'
+                        : 'No programme types match the current catalogue.'}
+                    />
+                  ) : <View style={styles.cardGrid}>
+                    {visibleProgrammes.map((programme) => (
+                      <View key={programme.id} style={{ width: cardWidth }}>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setProgrammeFilter(programme.courseType);
+                            setSection('Courses');
+                          }}
+                          style={styles.programmeCard}
+                        >
+                          <Ionicons name="school-outline" size={24} color={palette.primary} />
+                          <Text style={styles.courseTitle}>{programme.name}</Text>
+                          <Text style={styles.bodyText}>{programme.description}</Text>
+                          <Text style={styles.metaText}>
+                            {isAdministrator
+                              ? `${publishedCourses.filter((course) => course.programmeType === programme.courseType).length} published courses`
+                              : `${programme.courseCount} demonstration listings`}
+                          </Text>
+                          <Text style={styles.linkText}>Browse this programme type →</Text>
+                        </Pressable>
+                      </View>
                     ))}
-                  </View>
+                  </View>}
                 </>
               ) : null}
 
               {section === 'Providers' ? (
                 <>
-                  <SectionHeading title="Training provider directory" subtitle="Provider records below are examples and have not been independently verified." />
+                  <SectionHeading
+                    title="Training provider directory"
+                    subtitle={isAdministrator
+                      ? 'Approved provider records with published courses. Provider accreditation is not independently verified.'
+                      : 'Provider records below are examples and have not been independently verified.'}
+                  />
+                  {isAdministrator ? (
+                    <PostedLearningMaterials
+                      materials={postedResources}
+                      onOpen={openResource}
+                      title="Published materials for providers"
+                    />
+                  ) : null}
                   <TextInput
                     accessibilityLabel="Filter provider location"
                     value={locationFilter}
@@ -853,11 +1009,31 @@ export default function LearningScreen() {
 
               {section === 'Resources' ? (
                 <>
-                  <SectionHeading title="Learning resources" subtitle="Read short demonstration guides directly in the app. No external files or videos are linked." />
-                  <FilterChips items={[{ id: '', name: 'All topics' }, ...categories]} selectedId={categoryId} onSelect={setCategoryId} />
+                  <SectionHeading
+                    title="Learning materials"
+                    subtitle={isAdministrator
+                      ? 'Browse published learning materials by programme and topic.'
+                      : 'Browse administrator-published guides and attached study files by programme and topic.'}
+                  />
+                  <TextInput
+                    accessibilityLabel="Search learning materials"
+                    value={resourceSearch}
+                    onChangeText={setResourceSearch}
+                    placeholder="Search published materials"
+                    placeholderTextColor={palette.muted}
+                    style={styles.locationInput}
+                    returnKeyType="search"
+                  />
+                  <FilterChips
+                    items={[{ id: '', name: 'All programmes' }, ...courses.map((item) => ({ id: item.id, name: item.title }))]}
+                    selectedId={resourceProgrammeFilter}
+                    onSelect={setResourceProgrammeFilter}
+                  />
+                  <FilterChips items={[{ id: '', name: 'All topics' }, ...categories]} selectedId={resourceCategoryFilter} onSelect={setResourceCategoryFilter} />
                   <Pressable accessibilityRole="button" accessibilityLabel="Clear resource filters" onPress={clearFilters} style={styles.filterClearButton}>
                     <Text style={styles.clearText}>Clear filters</Text>
                   </Pressable>
+                  <Text style={styles.metaText}>Showing {visibleResources.length} published materials</Text>
                   {visibleResources.length === 0 ? <EmptyState title="No resources found" detail="Try a different keyword or topic." /> : (
                     <View style={styles.cardGrid}>
                       {visibleResources.map((resource) => (
@@ -865,7 +1041,7 @@ export default function LearningScreen() {
                           <View style={styles.resourceIcon}><Ionicons name="book-outline" size={23} color={palette.primary} /></View>
                           <Text style={styles.courseTitle}>{resource.title}</Text>
                           <Text style={styles.bodyText}>{resource.summary}</Text>
-                          <Text style={styles.metaText}>{resource.format} · Demonstration material</Text>
+                          <Text style={styles.metaText}>{resource.programmeType || 'General learning material'} · {resource.format}</Text>
                           <Pressable
                             accessibilityRole="button"
                             disabled={detailBusy}
@@ -874,8 +1050,8 @@ export default function LearningScreen() {
                           >
                             <Text style={styles.secondaryButtonText}>
                               {learningHome.startedResources.some((entry) => entry.resourceId === resource.id)
-                                ? 'Continue guide'
-                                : 'Start guide'}
+                                ? 'Continue material'
+                                : 'Open material'}
                             </Text>
                           </Pressable>
                         </View>
@@ -885,7 +1061,7 @@ export default function LearningScreen() {
                 </>
               ) : null}
 
-              {section === 'My learning' ? (
+              {section === 'My learning' && !isAdministrator ? (
                 <MyLearning
                   learningHome={learningHome}
                   width={cardWidth}
@@ -920,6 +1096,8 @@ export default function LearningScreen() {
               {section === 'Learning administration' || section === 'Learning review' ? (
                 <LearningAdministration
                   categories={categories}
+                  programmes={programmes}
+                  providers={providers}
                   canManageCatalog={session?.activeRole === 'administrator'}
                   onCatalogChange={() => setRetry((value) => value + 1)}
                 />
@@ -943,6 +1121,8 @@ function DetailScreen({
   resourceDetail,
   detailError,
   detailBusy,
+  downloadBusy,
+  isAdministrator,
   feedback,
   applicantNote,
   acknowledgedDemo,
@@ -956,6 +1136,7 @@ function DetailScreen({
   onSaveCourse,
   onSubmitEnrollment,
   onStartResource,
+  onDownloadResource,
   onOpenCourse,
 }: {
   courseId: string;
@@ -966,6 +1147,8 @@ function DetailScreen({
   resourceDetail: LearningResource | null;
   detailError: string;
   detailBusy: boolean;
+  downloadBusy: boolean;
+  isAdministrator: boolean;
   feedback: string;
   applicantNote: string;
   acknowledgedDemo: boolean;
@@ -979,6 +1162,7 @@ function DetailScreen({
   onSaveCourse: (course: Course) => void;
   onSubmitEnrollment: (draft: boolean) => void;
   onStartResource: () => void;
+  onDownloadResource: (resource: LearningResource) => void;
   onOpenCourse: (id: string) => void;
 }) {
   const { width: windowWidth } = useWindowDimensions();
@@ -988,6 +1172,34 @@ function DetailScreen({
     if (!courseDetail) return <DetailLoading error={detailError} />;
     const { course, enrollment } = courseDetail;
     const eligibleRoles = Array.isArray(course.eligibleRoles) ? course.eligibleRoles : [];
+    if (isAdministrator) {
+      return (
+        <>
+          <View style={styles.coursePageHeader}>
+            <View style={styles.coursePageBadges}>
+              <Text style={styles.coursePageBadge}>{course.category}</Text>
+              <Text style={styles.coursePageBadge}>{course.programmeType}</Text>
+              <Text style={styles.coursePageBadge}>{course.status}</Text>
+            </View>
+            <Text style={styles.detailTitle}>{course.title}</Text>
+            <Text style={styles.courseProviderLine}>
+              {course.provider?.name ?? 'Provider record unavailable'} · {course.duration} · {course.deliveryMethod}
+            </Text>
+          </View>
+          <View style={styles.courseDetailsCard}>
+            <Text style={styles.courseContentHeading}>Programme details</Text>
+            <Text style={styles.detailBody}>{course.description}</Text>
+            <DetailInfo label="Training provider status" value={course.provider?.verificationStatus ?? 'Unverified'} />
+            <DetailInfo label="Accreditation" value={course.accreditation} />
+            {course.requirements ? <DetailInfo label="Programme requirements" value={course.requirements} /> : null}
+            <DetailInfo label="Eligible roles" value={eligibleRoles.join(', ') || 'No eligible audiences listed'} />
+            <Text style={styles.disclaimer}>
+              {course.dataStatus} Learners must enrol using their own account. Administrators cannot enrol in programmes or add materials to My learning.
+            </Text>
+          </View>
+        </>
+      );
+    }
     const alreadyEnrolled = enrollment && enrollment.status !== 'Withdrawn';
     const canEnroll = eligibleToEnrol && eligibleRoles.length > 0 && course.interestEnabled;
     if (alreadyEnrolled) {
@@ -1215,7 +1427,7 @@ function DetailScreen({
         {courses.length === 0 ? <EmptyState title="No listed programmes" detail="There are no published programmes for this provider." /> : (
           <View style={styles.cardGrid}>
             {courses.map((course) => (
-              <CourseCard key={course.id} course={course} width="100%" onOpen={() => onOpenCourse(course.id)} />
+              <CourseCard key={course.id} course={course} width="100%" onOpen={() => onOpenCourse(course.id)} viewOnly={isAdministrator} />
             ))}
           </View>
         )}
@@ -1231,25 +1443,44 @@ function DetailScreen({
         <Text style={styles.eyebrow}>LEARNING RESOURCE · {resourceDetail.format}</Text>
         <Text style={styles.detailTitle}>{resourceDetail.title}</Text>
         <Text style={styles.detailBody}>{resourceDetail.summary}</Text>
+        {resourceDetail.programmeType ? <DetailInfo label="Programme" value={resourceDetail.programmeType} /> : null}
         <Text style={styles.disclaimer}>{resourceDetail.dataStatus}</Text>
         {resourceDetail.content?.map((paragraph, index) => (
           <Text key={`${resourceDetail.id}-${index}`} style={styles.resourceParagraph}>{paragraph}</Text>
         ))}
-        <View style={styles.notice}>
-          <Text style={styles.bodyText}>This guide is available to read in the app. There is no separate download or external media link.</Text>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          disabled={detailBusy || isResourceStarted}
-          onPress={onStartResource}
-          style={[styles.primaryButton, (detailBusy || isResourceStarted) && styles.disabledButton]}
-        >
-          <Text style={styles.primaryButtonText}>
-            {isResourceStarted ? 'Guide added to My learning' : detailBusy ? 'Adding guide...' : 'Start guide'}
-          </Text>
-        </Pressable>
-        {isResourceStarted ? (
-          <Text style={styles.metaText}>In progress · This guide is listed under My learning.</Text>
+        {resourceDetail.attachment ? (
+          <View style={styles.notice}>
+            <Text style={styles.bodyText}>Attached file: {resourceDetail.attachment.filename}</Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={downloadBusy}
+              onPress={() => onDownloadResource(resourceDetail)}
+              style={[styles.secondaryButton, downloadBusy && styles.disabledButton]}
+            >
+              <Text style={styles.secondaryButtonText}>{downloadBusy ? 'Preparing file...' : 'Download learning material'}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.notice}>
+            <Text style={styles.bodyText}>This material can be read in the app.</Text>
+          </View>
+        )}
+        {!isAdministrator ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              disabled={detailBusy || isResourceStarted}
+              onPress={onStartResource}
+              style={[styles.primaryButton, (detailBusy || isResourceStarted) && styles.disabledButton]}
+            >
+              <Text style={styles.primaryButtonText}>
+                {isResourceStarted ? 'Material added to My learning' : detailBusy ? 'Adding material...' : 'Add to My learning'}
+              </Text>
+            </Pressable>
+            {isResourceStarted ? (
+              <Text style={styles.metaText}>In progress · This material is listed under My learning.</Text>
+            ) : null}
+          </>
         ) : null}
         {feedback ? <Text accessibilityRole="alert" style={styles.feedback}>{feedback}</Text> : null}
       </>
@@ -1262,12 +1493,14 @@ function CourseCard({
   course,
   width,
   onOpen,
+  viewOnly = false,
   onSave,
   busy = false,
 }: {
   course: Course;
   width: string;
   onOpen: () => void;
+  viewOnly?: boolean;
   onSave?: () => void;
   busy?: boolean;
 }) {
@@ -1289,7 +1522,7 @@ function CourseCard({
         <Text style={styles.unverifiedBadge}>Demonstration · Accreditation not verified</Text>
         <View style={styles.cardActions}>
           <Pressable accessibilityRole="button" onPress={onOpen} style={[styles.secondaryButton, styles.flexOne]}>
-            <Text style={styles.secondaryButtonText}>View details & enrol</Text>
+            <Text style={styles.secondaryButtonText}>{viewOnly ? 'View programme details' : 'View details & enrol'}</Text>
           </Pressable>
           {onSave ? (
             <Pressable
@@ -1305,6 +1538,72 @@ function CourseCard({
         </View>
       </View>
     </View>
+  );
+}
+
+function PostedLearningMaterials({
+  materials,
+  onOpen,
+  title = 'Posted materials',
+  emptyMessage = 'No published materials for this listing.',
+}: {
+  materials: LearningResource[];
+  onOpen: (id: string) => void;
+  title?: string;
+  emptyMessage?: string;
+}) {
+  return (
+    <View style={styles.postedMaterials}>
+      <Text style={styles.postedMaterialsHeading}>{title} ({materials.length})</Text>
+      {materials.length ? (
+        <View style={[styles.categoryGrid, styles.courseResultsGrid]}>
+          {materials.map((material) => (
+            <Pressable
+              key={material.id}
+              accessibilityRole="button"
+              accessibilityLabel={`Open learning material ${material.title}`}
+              onPress={() => onOpen(material.id)}
+              style={[styles.categoryCard, styles.courseResultCard]}
+            >
+              <View style={styles.categoryIcon}><Ionicons name="document-text-outline" size={20} color={palette.primary} /></View>
+              <Text style={styles.categoryTitle}>{material.title}</Text>
+              <Text style={styles.categoryDescription}>{material.summary}</Text>
+              <Text style={styles.metaText}>
+                {material.programmeType || 'General'} · {material.format}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.postedMaterialsEmpty}>{emptyMessage}</Text>
+      )}
+    </View>
+  );
+}
+
+function CourseBrowseCard({
+  course,
+  onOpen,
+  isAdministrator,
+}: {
+  course: Course;
+  onOpen: () => void;
+  isAdministrator: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`View course ${course.title}`}
+      onPress={onOpen}
+      style={[styles.categoryCard, styles.courseResultCard]}
+    >
+      <View style={styles.categoryIcon}><Ionicons name="school-outline" size={20} color={palette.primary} /></View>
+      <Text style={styles.categoryTitle}>{course.title}</Text>
+      <Text style={styles.categoryDescription}>{course.description}</Text>
+      <Text style={styles.metaText}>{course.category} · {course.provider?.name ?? 'Provider unlisted'}</Text>
+      <Text style={styles.metaText}>{course.duration} · {course.deliveryMethod}</Text>
+      <Text style={styles.linkText}>{isAdministrator ? 'View course details' : 'View details & enrol'}</Text>
+    </Pressable>
   );
 }
 
@@ -1971,11 +2270,6 @@ function ProviderManagement({
   type ProviderData = {
     provider: ProviderProfile;
     courses: Course[];
-    enrollments: (Enrollment & {
-      courseTitle: string;
-      participant: { firstName: string; lastName: string; email: string } | null;
-      progressUpdatedAt: string | null;
-    })[];
   };
   const [data, setData] = useState<ProviderData | null>(null);
   const [title, setTitle] = useState('');
@@ -2074,24 +2368,6 @@ function ProviderManagement({
     }
   };
 
-  const updateEnrollment = async (enrollment: Enrollment, status: string) => {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await apiFetch(`/learning/enrollments/${encodeURIComponent(enrollment.id)}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status }),
-      });
-      setMessage(`Enrolment request ${enrollment.reference} updated to ${status}.`);
-      setReload((value) => value + 1);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Enrolment request status could not be updated.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitProfile = async () => {
     if (busy) return;
     setBusy(true);
@@ -2111,27 +2387,9 @@ function ProviderManagement({
     }
   };
 
-  const updateProgress = async (enrollment: ProviderData['enrollments'][number], progress: number) => {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await apiFetch(`/learning/provider/enrollments/${encodeURIComponent(enrollment.id)}/progress`, {
-        method: 'PATCH',
-        body: JSON.stringify({ progress }),
-      });
-      setMessage(`Training progress for ${enrollment.reference} updated to ${progress}%.`);
-      setReload((value) => value + 1);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Training progress could not be updated.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <>
-      <SectionHeading title="Provider tools" subtitle="Manage your provider profile, programme submissions, learner participation, and training progress." />
+      <SectionHeading title="Provider tools" subtitle="Manage your training provider profile, programme listings, supporting documents, and administrator review outcomes." />
       {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
       {message ? <Text accessibilityRole="alert" style={styles.feedback}>{message}</Text> : null}
       {data ? (
@@ -2213,45 +2471,20 @@ function ProviderManagement({
         </View>
       )) : <EmptyState title="No programme listings" detail="Submitted programmes will appear here with their review status." />}
 
-      <Text style={styles.sectionTitle}>Course enrolment requests</Text>
-      {data?.enrollments.length ? data.enrollments.map((entry) => (
-        <View key={entry.id} style={styles.providerCard}>
-          <Text style={styles.courseTitle}>{entry.courseTitle}</Text>
-          <Text style={styles.metaText}>Reference: {entry.reference} · {entry.status}</Text>
-          {entry.participant ? <Text style={styles.metaText}>{entry.participant.firstName} {entry.participant.lastName} · {entry.participant.email}</Text> : <Text style={styles.disclaimer}>Participant contact details are not shared because consent was not recorded.</Text>}
-          {['Submitted', 'Under Review', 'Waitlisted'].includes(entry.status) ? (
-            <View style={styles.reviewActions}>
-              {['Under Review', 'Waitlisted', 'Accepted', 'Rejected'].map((status) => (
-                <Pressable key={status} accessibilityRole="button" disabled={busy} onPress={() => void updateEnrollment(entry, status)} style={styles.reviewAction}>
-                  <Text style={styles.secondaryButtonText}>{status}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-          {entry.status === 'Accepted' ? (
-            <View>
-              <Text style={styles.metaText}>Training progress: {entry.trainingProgress ?? 0}%{entry.progressUpdatedAt ? ` · Updated ${new Date(entry.progressUpdatedAt).toLocaleDateString()}` : ''}</Text>
-              <View style={styles.reviewActions}>
-                {[0, 25, 50, 75, 100].map((progress) => (
-                  <Pressable key={progress} accessibilityRole="button" disabled={busy} onPress={() => void updateProgress(entry, progress)} style={styles.reviewAction}>
-                    <Text style={styles.secondaryButtonText}>{progress}%</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ) : null}
-        </View>
-      )) : <EmptyState title="No enrolment requests" detail="Requests for your approved provider profile will be listed here." />}
     </>
   );
 }
 
 function LearningAdministration({
   categories,
+  programmes,
+  providers,
   canManageCatalog,
   onCatalogChange,
 }: {
   categories: LearningCategory[];
+  programmes: Programme[];
+  providers: ProviderSummary[];
   canManageCatalog: boolean;
   onCatalogChange: () => void;
 }) {
@@ -2269,16 +2502,66 @@ function LearningAdministration({
     profileCompletionSubmitted: boolean;
     pendingProfileChanges: { name: string; location: string; description: string } | null;
   };
+  type ManagedProgramme = Course & {
+    startDate?: string | null;
+    endDate?: string | null;
+    capacity?: number | null;
+    facilitator?: string;
+    enrolmentCount: number;
+    completedCount: number;
+  };
+  type ManagedEnrollment = {
+    id: string;
+    status: string;
+    updatedAt: string;
+    trainingProgress: number;
+    learner: { id: string; firstName: string; lastName: string } | null;
+    programme: { id: string; title: string } | null;
+  };
+  type AdminDashboard = {
+    metrics: { label: string; value: number }[];
+    programmes: ManagedProgramme[];
+    enrollments: ManagedEnrollment[];
+    recentMaterials: LearningResource[];
+  };
   type ReviewData = { courses: ReviewCourse[]; enrollments: ReviewEnrollment[] };
   const [review, setReview] = useState<ReviewData>({ courses: [], enrollments: [] });
   const [providerProfiles, setProviderProfiles] = useState<ReviewProvider[]>([]);
+  const [adminDashboard, setAdminDashboard] = useState<AdminDashboard | null>(null);
+  const [programmeDraft, setProgrammeDraft] = useState({
+    title: '',
+    description: '',
+    requirements: '',
+    categoryId: '',
+    programmeType: '',
+    providerId: '',
+    duration: '',
+    deliveryMethod: '',
+    location: '',
+    startDate: '',
+    endDate: '',
+    capacity: '',
+    facilitator: '',
+    eligibleRoles: ['learner'] as AppRole[],
+  });
+  const [selectedMaterialProgrammeId, setSelectedMaterialProgrammeId] = useState('');
+  const [withdrawalReasons, setWithdrawalReasons] = useState<Record<string, string>>({});
+  const [withdrawalConfirmationId, setWithdrawalConfirmationId] = useState('');
   const [resources, setResources] = useState<LearningResource[]>([]);
+  const [resourceListSearch, setResourceListSearch] = useState('');
+  const [resourceListProgrammeId, setResourceListProgrammeId] = useState('');
+  const [resourceListCategoryId, setResourceListCategoryId] = useState('');
+  const [resourceListPublicationStatus, setResourceListPublicationStatus] = useState('Published');
   const [categoryName, setCategoryName] = useState('');
   const [categoryDescription, setCategoryDescription] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedProgramme, setSelectedProgramme] = useState('');
   const [resourceTitle, setResourceTitle] = useState('');
   const [resourceSummary, setResourceSummary] = useState('');
   const [resourceContent, setResourceContent] = useState('');
+  const [resourcePublicationStatus, setResourcePublicationStatus] = useState<'Draft' | 'Published'>('Published');
+  const [resourceAttachment, setResourceAttachment] = useState<LearningResourceUploadAttachment | null>(null);
+  const [pickingResourceFile, setPickingResourceFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -2291,13 +2574,17 @@ function LearningAdministration({
       apiFetch<ReviewData>('/learning/admin/review'),
       apiFetch<{ resources: LearningResource[] }>('/learning/resources'),
       canManageCatalog
+        ? apiFetch<AdminDashboard>('/learning/admin/dashboard')
+        : Promise.resolve(null),
+      canManageCatalog
         ? apiFetch<{ providers: ReviewProvider[] }>('/learning/admin/providers')
         : Promise.resolve({ providers: [] }),
     ])
-      .then(([reviewPayload, resourcePayload, providerPayload]) => {
+      .then(([reviewPayload, resourcePayload, dashboardPayload, providerPayload]) => {
         if (active) {
           setReview(reviewPayload);
           setResources(resourcePayload.resources);
+          setAdminDashboard(dashboardPayload);
           setProviderProfiles(providerPayload.providers);
           setError('');
         }
@@ -2327,6 +2614,110 @@ function LearningAdministration({
     }
   };
 
+  const publishedManagedProgrammes = (adminDashboard?.programmes || []).filter((entry) => entry.status === 'Published');
+  const filteredManagedResources = resources.filter((resource) => {
+    const query = resourceListSearch.trim().toLowerCase();
+    return (!query || `${resource.title} ${resource.summary} ${resource.programmeType || ''} ${resource.format}`.toLowerCase().includes(query)) &&
+      (!resourceListProgrammeId || resource.programmeId === resourceListProgrammeId) &&
+      (!resourceListCategoryId || resource.categoryId === resourceListCategoryId) &&
+      (resourceListPublicationStatus === 'All' ||
+        (resource.publicationStatus || 'Published') === resourceListPublicationStatus);
+  });
+  const toggleProgrammeAudience = (role: AppRole) => {
+    setProgrammeDraft((current) => ({
+      ...current,
+      eligibleRoles: current.eligibleRoles.includes(role)
+        ? current.eligibleRoles.filter((entry) => entry !== role)
+        : [...current.eligibleRoles, role],
+    }));
+  };
+
+  const createProgramme = async () => {
+    const succeeded = await runAction('/learning/admin/programmes', 'POST', {
+      ...programmeDraft,
+      capacity: programmeDraft.capacity || undefined,
+      status: 'Published',
+    }, 'Learning programme created and published.');
+    if (succeeded) {
+      setProgrammeDraft({
+        title: '',
+        description: '',
+        requirements: '',
+        categoryId: '',
+        programmeType: '',
+        providerId: '',
+        duration: '',
+        deliveryMethod: '',
+        location: '',
+        startDate: '',
+        endDate: '',
+        capacity: '',
+        facilitator: '',
+        eligibleRoles: ['learner'],
+      });
+    }
+  };
+
+  const withdrawManagedEnrolment = async (enrollment: ManagedEnrollment) => {
+    const reason = withdrawalReasons[enrollment.id]?.trim() || '';
+    if (reason.length < 5) {
+      setError('Enter a withdrawal reason of at least five characters.');
+      return;
+    }
+    const succeeded = await runAction(
+      `/learning/admin/enrollments/${encodeURIComponent(enrollment.id)}`,
+      'PATCH',
+      { action: 'withdraw', reason },
+      'Learner withdrawn. Their access to assigned programme materials has ended.'
+    );
+    if (succeeded) {
+      setWithdrawalConfirmationId('');
+      setWithdrawalReasons((current) => ({ ...current, [enrollment.id]: '' }));
+    }
+  };
+
+  const selectLearningMaterialFile = async () => {
+    if (busy || pickingResourceFile) return;
+    setPickingResourceFile(true);
+    setError('');
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/jpeg', 'image/png'],
+        copyToCacheDirectory: true,
+        multiple: false,
+        base64: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType?.toLowerCase() || materialMimeTypeFromFilename(asset.name);
+      if (!['application/pdf', 'image/jpeg', 'image/png'].includes(mimeType)) {
+        setError('Choose a PDF, JPG, or PNG learning material file.');
+        return;
+      }
+      if (asset.size !== undefined &&
+          (!Number.isInteger(asset.size) || asset.size <= 0 || asset.size > 2 * 1024 * 1024)) {
+        setError('Learning material files must be smaller than 2 MB.');
+        return;
+      }
+      const selectedData = asset.base64 || await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const data = selectedData.includes(',')
+        ? selectedData.slice(selectedData.indexOf(',') + 1)
+        : selectedData;
+      const size = Math.floor(data.length * 3 / 4) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+      if (size <= 0 || size > 2 * 1024 * 1024 || (asset.size !== undefined && asset.size !== size)) {
+        setError('The selected learning material is empty, oversized, or invalid.');
+        return;
+      }
+      setResourceAttachment({ filename: asset.name, mimeType, size, data });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The learning material file could not be selected.');
+    } finally {
+      setPickingResourceFile(false);
+    }
+  };
+
   return (
     <>
       <SectionHeading title={canManageCatalog ? 'Learning administration' : 'Learning review'} subtitle="Review submissions using the permissions attached to your signed-in account." />
@@ -2335,6 +2726,118 @@ function LearningAdministration({
 
       {canManageCatalog ? (
         <>
+          <View style={styles.enrollmentCard}>
+            <Text style={styles.sectionTitle}>Learning programme dashboard</Text>
+            <View style={styles.reviewActions}>
+              {(adminDashboard?.metrics || []).map((metric) => (
+                <View key={metric.label} style={styles.progressCard}>
+                  <Text style={styles.courseTitle}>{metric.value}</Text>
+                  <Text style={styles.metaText}>{metric.label}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.sectionTitle}>Create learning programme</Text>
+            <Text style={styles.disclaimer}>Programmes use the existing course catalogue and provider records. Provider and accreditation details are not independently verified.</Text>
+            <TextInput accessibilityLabel="Programme title" value={programmeDraft.title} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, title: value }))} placeholder="Programme title" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+            <TextInput accessibilityLabel="Programme description" value={programmeDraft.description} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, description: value }))} placeholder="Description" placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline maxLength={1000} />
+            <TextInput accessibilityLabel="Eligibility requirements" value={programmeDraft.requirements} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, requirements: value }))} placeholder="Eligibility requirements (optional)" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={1000} />
+            <Text style={styles.filterLabel}>Programme type</Text>
+            <FilterChips items={programmes.map((item) => ({ id: item.courseType, name: item.name }))} selectedId={programmeDraft.programmeType} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, programmeType: value }))} />
+            <Text style={styles.filterLabel}>Topic</Text>
+            <FilterChips items={categories.map((item) => ({ id: item.id, name: item.name }))} selectedId={programmeDraft.categoryId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, categoryId: value }))} />
+            <Text style={styles.filterLabel}>Training provider</Text>
+            <FilterChips items={providers.map((item) => ({ id: item.id, name: item.name }))} selectedId={programmeDraft.providerId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, providerId: value }))} />
+            <View style={styles.reviewActions}>
+              <TextInput accessibilityLabel="Programme duration" value={programmeDraft.duration} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, duration: value }))} placeholder="Duration" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} maxLength={80} />
+              <TextInput accessibilityLabel="Delivery method" value={programmeDraft.deliveryMethod} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, deliveryMethod: value }))} placeholder="Delivery method" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} maxLength={80} />
+            </View>
+            <TextInput accessibilityLabel="Programme location" value={programmeDraft.location} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, location: value }))} placeholder="Location" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+            <View style={styles.reviewActions}>
+              <TextInput accessibilityLabel="Programme start date" value={programmeDraft.startDate} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, startDate: value }))} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} />
+              <TextInput accessibilityLabel="Programme end date" value={programmeDraft.endDate} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, endDate: value }))} placeholder="End date (YYYY-MM-DD)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} />
+            </View>
+            <View style={styles.reviewActions}>
+              <TextInput accessibilityLabel="Learner capacity" value={programmeDraft.capacity} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, capacity: value }))} placeholder="Learner capacity (optional)" placeholderTextColor={palette.muted} keyboardType="number-pad" style={[styles.formInput, styles.reviewAction]} />
+              <TextInput accessibilityLabel="Facilitator" value={programmeDraft.facilitator} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, facilitator: value }))} placeholder="Facilitator (optional)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} maxLength={160} />
+            </View>
+            <Text style={styles.filterLabel}>Eligible roles</Text>
+            <View style={styles.reviewActions}>
+              {(['learner', 'farmer', 'employer', 'sdf'] as AppRole[]).map((role) => {
+                const checked = programmeDraft.eligibleRoles.includes(role);
+                return (
+                  <Pressable key={role} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => toggleProgrammeAudience(role)} style={[styles.reviewAction, checked && styles.filterChipSelected]}>
+                    <Text style={[styles.metaText, checked && styles.filterChipTextSelected]}>{role.replace('_', ' ')}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => void createProgramme()} style={[styles.primaryButton, busy && styles.disabledButton]}>
+              <Text style={styles.primaryButtonText}>{busy ? 'Saving programme...' : 'Create and publish programme'}</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.enrollmentCard}>
+            <Text style={styles.sectionTitle}>Managed programmes and learner progress</Text>
+            {(adminDashboard?.programmes || []).length ? adminDashboard?.programmes.map((programme) => (
+              <View key={programme.id} style={styles.manageRow}>
+                <View style={styles.providerHeadingCopy}>
+                  <Text style={styles.courseTitle}>{programme.title}</Text>
+                  <Text style={styles.metaText}>{programme.status} · {programme.enrolmentCount} enrolled · {programme.completedCount} completed</Text>
+                  {programme.startDate || programme.endDate ? <Text style={styles.metaText}>{programme.startDate || 'No start date'} to {programme.endDate || 'No end date'}</Text> : null}
+                </View>
+                {programme.status !== 'Archived' ? (
+                  <View>
+                    <Pressable accessibilityRole="button" disabled={busy} onPress={() => void runAction(`/learning/admin/programmes/${encodeURIComponent(programme.id)}`, 'PATCH', { action: programme.status === 'Published' ? 'unpublish' : 'publish' }, `${programme.title} ${programme.status === 'Published' ? 'unpublished' : 'published'}.`)}>
+                      <Text style={styles.linkText}>{programme.status === 'Published' ? 'Unpublish' : 'Publish'}</Text>
+                    </Pressable>
+                    <Pressable accessibilityRole="button" disabled={busy} onPress={() => void runAction(`/learning/admin/programmes/${encodeURIComponent(programme.id)}`, 'PATCH', { action: 'archive' }, `${programme.title} archived.`)}>
+                      <Text style={styles.withdrawText}>Archive</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            )) : <EmptyState title="No managed programmes yet" detail="Create a programme above to add it to the catalogue." />}
+            {(adminDashboard?.enrollments || []).length ? adminDashboard?.enrollments.map((entry) => (
+              <View key={entry.id} style={styles.providerCard}>
+                <Text style={styles.bodyText}>
+                  {entry.learner ? `${entry.learner.firstName} ${entry.learner.lastName}` : 'Learner unavailable'}
+                  {' · '}{entry.programme?.title || 'Programme unavailable'}
+                </Text>
+                <Text style={styles.metaText}>{entry.status} · {entry.trainingProgress}% progress · {formatDate(entry.updatedAt)}</Text>
+                {entry.status !== 'Withdrawn' ? (
+                  <>
+                    <TextInput
+                      accessibilityLabel={`Withdrawal reason for ${entry.learner?.firstName || 'learner'}`}
+                      value={withdrawalReasons[entry.id] || ''}
+                      onChangeText={(value) => setWithdrawalReasons((current) => ({ ...current, [entry.id]: value }))}
+                      placeholder="Reason required to withdraw this learner"
+                      placeholderTextColor={palette.muted}
+                      style={styles.formInput}
+                      maxLength={500}
+                    />
+                    {withdrawalConfirmationId === entry.id ? (
+                      <View style={styles.reviewActions}>
+                        <Pressable accessibilityRole="button" disabled={busy || (withdrawalReasons[entry.id] || '').trim().length < 5} onPress={() => void withdrawManagedEnrolment(entry)} style={[styles.reviewAction, (busy || (withdrawalReasons[entry.id] || '').trim().length < 5) && styles.disabledButton]}>
+                          <Text style={styles.withdrawText}>Confirm withdrawal</Text>
+                        </Pressable>
+                        <Pressable accessibilityRole="button" disabled={busy} onPress={() => setWithdrawalConfirmationId('')} style={styles.reviewAction}>
+                          <Text style={styles.secondaryButtonText}>Cancel</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Pressable accessibilityRole="button" disabled={busy} onPress={() => {
+                        setError('');
+                        setWithdrawalConfirmationId(entry.id);
+                      }} style={styles.reviewAction}>
+                        <Text style={styles.withdrawText}>Withdraw learner</Text>
+                      </Pressable>
+                    )}
+                  </>
+                ) : null}
+              </View>
+            )) : null}
+          </View>
+
           <Text style={styles.sectionTitle}>Provider profiles awaiting review</Text>
           {providerProfiles.length ? providerProfiles.map((provider) => {
             const submitted = provider.pendingProfileChanges;
@@ -2457,33 +2960,132 @@ function LearningAdministration({
           </View>
 
           <View style={styles.enrollmentCard}>
-            <Text style={styles.sectionTitle}>Manage in-app learning guides</Text>
-            <TextInput accessibilityLabel="Guide title" value={resourceTitle} onChangeText={setResourceTitle} placeholder="Guide title" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
-            <TextInput accessibilityLabel="Guide summary" value={resourceSummary} onChangeText={setResourceSummary} placeholder="Short summary" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={300} />
+            <Text style={styles.sectionTitle}>Post learning material</Text>
+            <Text style={styles.disclaimer}>Materials are available to signed-in users. Attach a PDF, JPG, or PNG (up to 2 MB), add in-app text, or provide both.</Text>
+            <TextInput accessibilityLabel="Learning material title" value={resourceTitle} onChangeText={setResourceTitle} placeholder="Material title" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+            <TextInput accessibilityLabel="Learning material summary" value={resourceSummary} onChangeText={setResourceSummary} placeholder="Short summary" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={300} />
+            <Text style={styles.filterLabel}>Publication status</Text>
+            <FilterChips items={[{ id: 'Draft', name: 'Draft' }, { id: 'Published', name: 'Published' }]} selectedId={resourcePublicationStatus} onSelect={(value) => setResourcePublicationStatus(value as 'Draft' | 'Published')} />
+            <Text style={styles.filterLabel}>Assign to published programme</Text>
+            <FilterChips items={publishedManagedProgrammes.map((item) => ({ id: item.id, name: item.title }))} selectedId={selectedMaterialProgrammeId} onSelect={(value) => {
+              const selected = publishedManagedProgrammes.find((item) => item.id === value);
+              setSelectedMaterialProgrammeId(value);
+              setSelectedProgramme(selected?.programmeType || '');
+            }} />
+            <Text style={styles.filterLabel}>Programme</Text>
+            <Text style={styles.metaText}>{selectedProgramme ? programmes.find((item) => item.courseType === selectedProgramme)?.name : 'Select a published programme above.'}</Text>
+            <Text style={styles.filterLabel}>Topic</Text>
             <FilterChips items={categories.map((item) => ({ id: item.id, name: item.name }))} selectedId={selectedCategory} onSelect={setSelectedCategory} />
-            <TextInput accessibilityLabel="Guide paragraphs" value={resourceContent} onChangeText={setResourceContent} placeholder="Guide text. Put each paragraph on a new line." placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline />
-            <Pressable accessibilityRole="button" disabled={busy} onPress={() => {
+            <TextInput accessibilityLabel="Learning material text" value={resourceContent} onChangeText={setResourceContent} placeholder="Optional in-app text. Put each paragraph on a new line." placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline />
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy || pickingResourceFile}
+              onPress={() => void selectLearningMaterialFile()}
+              style={[styles.secondaryButton, (busy || pickingResourceFile) && styles.disabledButton]}
+            >
+              <Text style={styles.secondaryButtonText}>{pickingResourceFile ? 'Selecting file...' : 'Choose PDF, JPG or PNG'}</Text>
+            </Pressable>
+            {resourceAttachment ? (
+              <View style={styles.manageRow}>
+                <Text style={styles.bodyText}>{resourceAttachment.filename}</Text>
+                <Pressable accessibilityRole="button" disabled={busy} onPress={() => setResourceAttachment(null)}>
+                  <Ionicons name="close-circle-outline" size={22} color={palette.danger} />
+                </Pressable>
+              </View>
+            ) : null}
+            <Pressable accessibilityRole="button" disabled={busy || pickingResourceFile || !selectedMaterialProgrammeId} onPress={() => {
               const content = resourceContent.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
               void runAction('/learning/resources', 'POST', {
                 title: resourceTitle,
                 summary: resourceSummary,
                 categoryId: selectedCategory,
+                programmeType: selectedProgramme,
+                programmeId: selectedMaterialProgrammeId,
+                publicationStatus: resourcePublicationStatus,
                 content,
-              }, 'Learning guide added.')
+                ...(resourceAttachment ? { attachment: resourceAttachment } : {}),
+              }, resourcePublicationStatus === 'Published' ? 'Learning material published.' : 'Learning material saved as a draft.')
                 .then((succeeded) => {
                   if (succeeded) {
                     setResourceTitle('');
                     setResourceSummary('');
                     setResourceContent('');
+                    setResourceAttachment(null);
+                    setResourcePublicationStatus('Published');
+                    setSelectedMaterialProgrammeId('');
+                    setSelectedProgramme('');
                   }
                 });
-            }} style={[styles.primaryButton, busy && styles.disabledButton]}>
-              <Text style={styles.primaryButtonText}>Add in-app guide</Text>
+            }} style={[styles.primaryButton, (busy || pickingResourceFile || !selectedMaterialProgrammeId) && styles.disabledButton]}>
+              <Text style={styles.primaryButtonText}>Publish learning material</Text>
             </Pressable>
-            {resources.map((resource) => (
+            <Text style={styles.sectionTitle}>Posted learning materials</Text>
+            <TextInput
+              accessibilityLabel="Search posted learning materials"
+              value={resourceListSearch}
+              onChangeText={setResourceListSearch}
+              placeholder="Search by material, summary, format or programme type"
+              placeholderTextColor={palette.muted}
+              style={styles.formInput}
+              returnKeyType="search"
+            />
+            <Text style={styles.filterLabel}>Programme</Text>
+            <FilterChips
+              items={[{ id: '', name: 'All programmes' }, ...(adminDashboard?.programmes || []).map((item) => ({ id: item.id, name: item.title }))]}
+              selectedId={resourceListProgrammeId}
+              onSelect={setResourceListProgrammeId}
+            />
+            <Text style={styles.filterLabel}>Topic</Text>
+            <FilterChips
+              items={[{ id: '', name: 'All topics' }, ...categories.map((item) => ({ id: item.id, name: item.name }))]}
+              selectedId={resourceListCategoryId}
+              onSelect={setResourceListCategoryId}
+            />
+            <Text style={styles.filterLabel}>Publication status</Text>
+            <FilterChips
+              items={[{ id: 'Published', name: 'Published' }, { id: 'Draft', name: 'Draft' }, { id: 'All', name: 'All materials' }]}
+              selectedId={resourceListPublicationStatus}
+              onSelect={setResourceListPublicationStatus}
+            />
+            <Text style={styles.metaText}>
+              Showing {filteredManagedResources.length} of {resources.length} materials
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear posted material filters"
+              onPress={() => {
+                setResourceListSearch('');
+                setResourceListProgrammeId('');
+                setResourceListCategoryId('');
+                setResourceListPublicationStatus('Published');
+              }}
+              style={styles.filterClearButton}
+            >
+              <Text style={styles.clearText}>Clear material filters</Text>
+            </Pressable>
+            {filteredManagedResources.length === 0 ? (
+              <EmptyState
+                title={resources.length ? 'No matching materials' : 'No learning materials posted'}
+                detail={resources.length
+                  ? 'Try another search or change the programme, topic or publication-status filters.'
+                  : 'Published materials will appear here after they are posted.'}
+              />
+            ) : null}
+            {filteredManagedResources.map((resource) => (
               <View key={resource.id} style={styles.manageRow}>
-                <Text style={styles.bodyText}>{resource.title}</Text>
-                <Pressable accessibilityRole="button" disabled={busy} onPress={() => void runAction(`/learning/resources/${encodeURIComponent(resource.id)}`, 'DELETE', undefined, `Guide ${resource.title} deleted.`)}>
+                <View style={styles.providerHeadingCopy}>
+                  <Text style={styles.bodyText}>{resource.title} · {resource.programmeType || 'General'}</Text>
+                  <Text style={styles.metaText}>{resource.publicationStatus || 'Published'} · {resource.format}</Text>
+                </View>
+                <Pressable accessibilityRole="button" disabled={busy} onPress={() => void runAction(
+                  `/learning/resources/${encodeURIComponent(resource.id)}`,
+                  'PATCH',
+                  { publicationStatus: resource.publicationStatus === 'Draft' ? 'Published' : 'Draft' },
+                  `${resource.title} ${resource.publicationStatus === 'Draft' ? 'published' : 'unpublished'}.`
+                )}>
+                  <Text style={styles.linkText}>{resource.publicationStatus === 'Draft' ? 'Publish' : 'Unpublish'}</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" disabled={busy} onPress={() => void runAction(`/learning/resources/${encodeURIComponent(resource.id)}`, 'DELETE', undefined, `Learning material ${resource.title} deleted.`)}>
                   <Ionicons name="trash-outline" size={20} color={palette.danger} />
                 </Pressable>
               </View>
@@ -2493,6 +3095,14 @@ function LearningAdministration({
       ) : null}
     </>
   );
+}
+
+function materialMimeTypeFromFilename(filename: string) {
+  const extension = filename.split('.').pop()?.toLowerCase();
+  if (extension === 'pdf') return 'application/pdf';
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
+  if (extension === 'png') return 'image/png';
+  return '';
 }
 
 function FilterChips({
@@ -2646,6 +3256,11 @@ const styles = StyleSheet.create({
   courseCard: { backgroundColor: palette.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: palette.border, overflow: 'hidden', marginBottom: spacing.md },
   courseImage: { width: '100%', height: 150, backgroundColor: palette.surfaceAlt },
   courseCardBody: { padding: spacing.md },
+  postedMaterials: { borderTopWidth: 1, borderTopColor: palette.border, marginTop: spacing.md, paddingTop: spacing.sm },
+  postedMaterialsHeading: { color: palette.text, fontSize: 12, fontWeight: '800', marginBottom: spacing.xs },
+  postedMaterialRow: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, borderTopWidth: 1, borderTopColor: palette.border, paddingVertical: spacing.xs },
+  postedMaterialTitle: { color: palette.text, fontSize: 12, fontWeight: '700' },
+  postedMaterialsEmpty: { color: palette.muted, fontSize: 11, lineHeight: 16 },
   categoryLabel: { color: palette.primary, fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase', fontWeight: '800' },
   courseTitle: { color: palette.text, fontSize: 16, lineHeight: 21, fontWeight: '800', marginTop: spacing.xs },
   bodyText: { color: palette.text, fontSize: 13, lineHeight: 20, marginTop: spacing.xs },
@@ -2657,6 +3272,8 @@ const styles = StyleSheet.create({
   saveButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm, borderWidth: 1, borderColor: palette.border },
   flexOne: { flex: 1 },
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: spacing.sm, marginTop: spacing.sm },
+  courseResultsGrid: { flexDirection: 'column', justifyContent: 'flex-start' },
+  courseResultCard: { width: '100%', flexGrow: 0 },
   categoryCard: { width: '48%', minWidth: 140, flexGrow: 1, backgroundColor: palette.surface, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border, padding: spacing.md },
   categoryIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: palette.surfaceAlt },
   categoryTitle: { color: palette.text, fontSize: 13, lineHeight: 18, fontWeight: '800', marginTop: spacing.sm },

@@ -51,16 +51,27 @@ BREVO_SENDER_NAME=MyAgriSETA
 
 Use the SMTP login and SMTP key from Brevo (not your Brevo account password or API key), and verify the sender address/domain in Brevo. Port 587 uses STARTTLS. Restart the backend after editing `.env`. The health endpoint reports whether email notifications are enabled. If SMTP delivery fails, the in-app notification remains saved, the delivery status is marked failed, and a sanitized error is logged; check the backend logs and Brevo SMTP settings. Email sending is disabled during automated tests.
 
-The prototype does not send password-reset emails. SMS delivery is not configured.
+#### Password reset by email
+
+Password reset uses the same Brevo SMTP settings. When email is enabled, **Forgot password?** on the sign-in screen asks for the account email and sends a link plus a reset code. The link opens `PASSWORD_RESET_URL?token=...`. If `PASSWORD_RESET_URL` is not set, it defaults to the first `CLIENT_URL` origin followed by `/reset-password`. Users on a phone can paste the code on the **I already have a reset code** screen instead.
+
+```env
+# Optional: the web page that opens from the reset email
+PASSWORD_RESET_URL=http://localhost:8081/reset-password
+```
+
+Reset codes expire after 30 minutes and can be used once. A new code can be requested every 60 seconds. A successful reset signs the account out on all devices and is recorded in the audit log. If `BREVO_EMAIL_ENABLED` is not `true`, the reset request returns `503` and users are told to contact an administrator; reset codes are never written to logs.
+
+SMS delivery is not configured.
 
 ## Mobile app
 
 1. In `mobile/`, run `npm install`.
-2. If the default API address is unsuitable, create a local `mobile/.env` containing `EXPO_PUBLIC_API_URL=http://localhost:3000/api`. The repository does not include a mobile `.env.example`.
-3. Configure `server/.env` with Neon and `mobile/.env` with the API URL. From the repository root, run `npm run dev` to start the API and Expo web app. Registration and sign-in require the API and Neon to be available.
-4. To run only the mobile app, use `npm run dev:mobile` from the repository root, or `npm run web` from `mobile/`. In this mode, separately run `npm run dev` from `server/`.
+2. Configure `server/.env` with Neon. The optional `mobile/.env.example` documents `EXPO_PUBLIC_API_URL`; the default is `http://localhost:3000/api`.
+3. From the repository root, `npm run dev` starts the API and Expo web app. Registration and sign-in require the API and Neon to be available.
+4. To use Expo Go, start the API in one terminal. From the repository root, run `npm --prefix server run dev`; if that terminal is already in `server/`, run `npm run dev` instead. In a second terminal at the repository root, run `npm run dev:mobile`. This starts Expo in LAN mode. Open its QR code in Expo Go. The native app automatically replaces a localhost API URL with the host address used by the Expo development server.
 
-On a physical device, use the development computer's LAN address in `EXPO_PUBLIC_API_URL`; `localhost` on the device refers to the device itself. Do not place secrets in `EXPO_PUBLIC_*` variables because they are bundled into the client.
+The phone and development computer must be on the same Wi-Fi/network. The backend listens on `0.0.0.0` by default so devices on the LAN can reach it; set `HOST` in `server/.env` only if a different bind address is required. If the app still cannot connect, allow Node.js or inbound TCP port 3000 through the computer's private-network firewall, check `http://<computer-LAN-IP>:3000/health` from the phone's browser, and make sure `EXPO_PUBLIC_API_URL` is not set to a stale non-loopback address. `localhost` on the phone refers to the phone itself. Do not place secrets in `EXPO_PUBLIC_*` variables because they are bundled into the client.
 
 ### Farmer services and curated information
 

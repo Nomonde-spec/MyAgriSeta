@@ -709,6 +709,16 @@ test('administrator can provision an internal staff account without role switchi
     headers: { Authorization: `Bearer ${staffToken}` },
   });
   assert.equal(reviewResponse.response.status, 200);
+  const pendingApplication = reviewResponse.body.applications.find((application) =>
+    ['Submitted', 'Under Review', 'Additional Information Required'].includes(application.status)
+  );
+  assert.ok(pendingApplication, 'staff review queue should include an application available for review');
+  const deniedFinalDecision = await request(`/admin/applications/${pendingApplication.id}/status`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${staffToken}` },
+    body: JSON.stringify({ status: 'Approved' }),
+  });
+  assert.equal(deniedFinalDecision.response.status, 403);
 
   const multiRoleToken = await login('multirole@myagriseta.local', 'Admin123!');
   const deniedReviewResponse = await request('/staff/review-queue', {
@@ -785,7 +795,7 @@ test('self-registration rejects invalid roles and malformed email addresses', as
   assert.equal(invalidEmail.response.status, 400);
 });
 
-test('logout revokes the current in-memory session token', async () => {
+test('logout revokes the current session token', async () => {
   const token = await login('learner@myagriseta.local', 'Lerato123!');
   const logoutResponse = await request('/auth/logout', {
     method: 'POST',
