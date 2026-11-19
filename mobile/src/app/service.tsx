@@ -240,7 +240,7 @@ export default function ServiceScreen() {
                 </View>
                 <Text style={styles.statusText}>
                   {service.id === 'svc-learn'
-                    ? 'Learning portal available · listings are demonstrations'
+                    ? 'Learning portal available · sample listings'
                     : service.status === 'open' ? 'Available in this prototype' : 'Prototype information only'}
                 </Text>
               </View>

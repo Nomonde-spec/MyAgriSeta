@@ -10,13 +10,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+  TextInput as NativeTextInput,
+  TextInputProps,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BackButton } from '@/components/navigation/back-button';
+import { FilterDropdown } from '@/components/filter-dropdown';
 import {
   LearnerSidebar,
   LearnerSidebarDrawer,
@@ -158,6 +160,41 @@ function normalizeLearningHome(payload: Partial<LearningHome>): LearningHome {
 
 const standardSections = ['Courses', 'Programmes', 'Providers', 'Resources', 'My learning'] as const;
 type Section = typeof standardSections[number] | 'Provider tools' | 'Learning review' | 'Learning administration';
+const providerProgrammeTitles = [
+  'Crop Production Skills Programme',
+  'Animal Production Skills Programme',
+  'Horticulture and Vegetable Production',
+  'Agricultural Business Management',
+  'Farm Safety and Compliance Training',
+];
+const providerProgrammeDescriptions = [
+  'Practical agricultural training that develops workplace-ready skills for sustainable farming.',
+  'A structured programme combining agricultural knowledge, practical activities, and learner support.',
+  'Training designed to improve production, business planning, and farm management skills.',
+  'An introductory agricultural programme for learners preparing for work or further study.',
+];
+const providerEntryRequirements = [
+  'No prior qualification required',
+  'Grade 9 or equivalent',
+  'Grade 12 or equivalent',
+  'Relevant agricultural experience',
+  'Basic computer literacy',
+];
+
+function TextInput({ accessibilityLabel, placeholder, ...props }: TextInputProps) {
+  const label = accessibilityLabel || placeholder;
+  return (
+    <View style={styles.field}>
+      {label ? <Text style={styles.fieldLabel}>{label}</Text> : null}
+      <NativeTextInput
+        {...props}
+        accessibilityLabel={accessibilityLabel}
+        placeholder={placeholder}
+        placeholderTextColor={palette.muted}
+      />
+    </View>
+  );
+}
 
 export default function LearningScreen() {
   const params = useLocalSearchParams<{
@@ -523,7 +560,7 @@ export default function LearningScreen() {
       setDetailFeedback(draft
         ? `Enrolment draft saved. Reference: ${enrollment.reference}`
         : enrollment.status === 'Enrolled (demo)'
-          ? `You're enrolled in this demonstration course. Reference: ${enrollment.reference}. No course place is reserved.`
+          ? `You're enrolled in this sample course. Reference: ${enrollment.reference}. No course place is reserved.`
           : `Your enrolment request was submitted. Reference: ${enrollment.reference}. The provider must confirm your place.`);
     } catch (error) {
       setDetailFeedback(error instanceof Error ? error.message : 'Your learning enrolment could not be saved.');
@@ -731,9 +768,13 @@ export default function LearningScreen() {
                 <View style={styles.heroShade} />
                 <View style={styles.heroCopy}>
                   <Text style={styles.heroEyebrow}>AGRILEARN · AGRICULTURAL LEARNING</Text>
-                  <Text style={styles.heroTitle}>Grow Your Skills. Build Your Agricultural Future.</Text>
+                  <Text style={styles.heroTitle}>
+                    {session?.activeRole === 'learner' ? `Welcome back, ${session.user.firstName}!` : 'Grow Your Skills. Build Your Agricultural Future.'}
+                  </Text>
                   <Text style={styles.heroDescription}>
-                    Discover agricultural courses, training programmes, learning resources, and opportunities to develop your skills and knowledge.
+                    {session?.activeRole === 'learner'
+                      ? 'Keep learning. Grow your skills. Build your future in agriculture.'
+                      : 'Discover agricultural courses, training programmes, learning resources, and opportunities to develop your skills and knowledge.'}
                   </Text>
                 </View>
               </View>
@@ -766,6 +807,10 @@ export default function LearningScreen() {
                     <Text style={styles.secondaryButtonText}>Try again</Text>
                   </Pressable>
                 </View>
+              ) : null}
+
+              {session?.activeRole === 'learner' ? (
+                <LearnerLearningOverview learningHome={learningHome} />
               ) : null}
 
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sectionTabs}>
@@ -808,7 +853,7 @@ export default function LearningScreen() {
                     <FilterChips
                       items={[
                         { id: '', name: 'All availability' },
-                        { id: 'Demonstration', name: 'Demonstration' },
+                        { id: 'Demonstration', name: 'Sample' },
                         { id: 'Published', name: 'Published' },
                       ]}
                       selectedId={availabilityFilter}
@@ -869,7 +914,7 @@ export default function LearningScreen() {
                   <Text style={styles.disclaimer}>
                     {isAdministrator
                       ? 'Only published listings are shown. Publication does not confirm accreditation or official AgriSETA status.'
-                      : 'Demonstration catalogue only. Providers and course details are unverified; listings do not confirm course availability, accreditation, or official AgriSETA status.'}
+                      : 'Sample catalogue only. Providers and course details are unverified; listings do not confirm course availability, accreditation, or official AgriSETA status.'}
                   </Text>
                   {coursesLoading ? <ActivityIndicator color={palette.primary} style={styles.inlineLoader} /> : null}
                   {courseError ? <Text accessibilityRole="alert" style={styles.errorText}>{courseError}</Text> : null}
@@ -908,7 +953,7 @@ export default function LearningScreen() {
                     title="Training programmes"
                     subtitle={isAdministrator
                       ? 'Programme types with published courses.'
-                      : 'Browse the programme types represented in this demonstration catalogue.'}
+                      : 'Browse the programme types represented in this sample catalogue.'}
                   />
                   {isAdministrator ? (
                     <PostedLearningMaterials
@@ -941,7 +986,7 @@ export default function LearningScreen() {
                           <Text style={styles.metaText}>
                             {isAdministrator
                               ? `${publishedCourses.filter((course) => course.programmeType === programme.courseType).length} published courses`
-                              : `${programme.courseCount} demonstration listings`}
+                              : `${programme.courseCount} sample listings`}
                           </Text>
                           <Text style={styles.linkText}>Browse this programme type →</Text>
                         </Pressable>
@@ -1255,7 +1300,7 @@ function DetailScreen({
             <Text style={styles.disclaimer}>
               {course.dataStatus}
               {enrollment.status === 'Enrolled (demo)'
-                ? ' This demonstration enrolment does not reserve a place or provide an accredited result or certificate.'
+                ? ' This sample enrolment does not reserve a place or provide an accredited result or certificate.'
                 : ' Your enrolment request is not confirmed until the training provider responds.'}
             </Text>
             <Pressable
@@ -1312,11 +1357,11 @@ function DetailScreen({
               <Text style={styles.courseTitle}>Your course enrolment</Text>
               <Text style={styles.bodyText}>Reference: {enrollment.reference}</Text>
               <Text style={styles.bodyText}>
-                Status: {enrollment.status === 'Enrolled (demo)' ? 'Enrolled · demo' : enrollment.status}
+                Status: {enrollment.status === 'Enrolled (demo)' ? 'Enrolled · sample' : enrollment.status}
               </Text>
               <Text style={styles.disclaimer}>
                 {enrollment.status === 'Enrolled (demo)'
-                  ? 'Demonstration course only. Progress is prototype activity and does not reserve a place or provide an accredited result or certificate.'
+                  ? 'Sample course only. Progress is prototype activity and does not reserve a place or provide an accredited result or certificate.'
                   : 'Your enrolment request is not confirmed until the training provider responds.'}
               </Text>
             </View>
@@ -1334,7 +1379,7 @@ function DetailScreen({
             </Text>
             <Text style={styles.bodyText}>
               {course.status === 'Demonstration'
-                ? 'This records a demonstration enrolment under your account. It is not a real course place and does not provide course delivery or accreditation.'
+                ? 'This records a sample enrolment under your account. It is not a real course place and does not provide course delivery or accreditation.'
                 : 'This submits your enrolment request to the provider. Your place is not confirmed until the provider responds.'}
             </Text>
             <TextInput
@@ -1360,7 +1405,7 @@ function DetailScreen({
               />
               <Text style={styles.acknowledgementText}>
                 {course.status === 'Demonstration'
-                  ? 'I understand this is a demonstration enrolment only; no place is reserved and no accreditation is provided.'
+                  ? 'I understand this is a sample enrolment only; no place is reserved and no accreditation is provided.'
                   : 'I understand submitting this request does not confirm my place or provide accreditation.'}
               </Text>
             </Pressable>
@@ -1519,7 +1564,7 @@ function CourseCard({
         <Text numberOfLines={3} style={styles.bodyText}>{course.description}</Text>
         <Text style={styles.metaText}>{course.provider?.name ?? 'Provider unlisted'}</Text>
         <Text style={styles.metaText}>{course.duration} · {course.deliveryMethod}</Text>
-        <Text style={styles.unverifiedBadge}>Demonstration · Accreditation not verified</Text>
+        <Text style={styles.unverifiedBadge}>Sample · Accreditation not verified</Text>
         <View style={styles.cardActions}>
           <Pressable accessibilityRole="button" onPress={onOpen} style={[styles.secondaryButton, styles.flexOne]}>
             <Text style={styles.secondaryButtonText}>{viewOnly ? 'View programme details' : 'View details & enrol'}</Text>
@@ -1659,7 +1704,7 @@ function MyLearning({
                   <Text style={styles.courseTitle}>{enrollment.course?.title ?? 'Learning course'}</Text>
                   <Text style={styles.metaText}>Reference: {enrollment.reference}</Text>
                   <Text style={styles.bodyText}>
-                    Status: {enrollment.status === 'Enrolled (demo)' ? 'Enrolled · demo' : enrollment.status}
+                    Status: {enrollment.status === 'Enrolled (demo)' ? 'Enrolled · sample' : enrollment.status}
                   </Text>
                   <Text style={styles.metaText}>
                     {enrollment.submittedAt
@@ -1668,7 +1713,7 @@ function MyLearning({
                   </Text>
                   <Text style={styles.disclaimer}>
                     {enrollment.status === 'Enrolled (demo)'
-                      ? 'Prototype course only. Modules and knowledge checks record demo progress; they do not reserve a real place or provide an accredited result or certificate.'
+                      ? 'Prototype course only. Modules and knowledge checks record sample progress; they do not reserve a real place or provide an accredited result or certificate.'
                       : enrollment.status === 'Draft'
                         ? 'This enrolment request is still a draft and has not been submitted.'
                         : enrollment.status === 'Accepted'
@@ -1718,7 +1763,7 @@ function MyLearning({
       )}
       {feedback ? <Text accessibilityRole="alert" style={styles.feedback}>{feedback}</Text> : null}
       <View style={styles.metricsRow}>
-        <MetricCard label="Enrolled · demo" value={demoEnrollments.length} />
+        <MetricCard label="Enrolled · sample" value={demoEnrollments.length} />
         <MetricCard label="Requests" value={requests.length} />
         <MetricCard label="Guides started" value={learningHome.startedResources.length} />
       </View>
@@ -1764,7 +1809,7 @@ function MyLearning({
       )}
       <Text style={styles.sectionTitle}>Learning progress</Text>
       {learningHome.progress.length === 0 ? (
-        <EmptyState title="No course progress recorded" detail="Open an enrolled demonstration course, complete its module lessons, and pass the knowledge checks to record prototype progress." />
+        <EmptyState title="No course progress recorded" detail="Open an enrolled sample course, complete its module lessons, and pass the knowledge checks to record prototype progress." />
       ) : (
         learningHome.progress.map((entry) => (
           <View key={`${entry.courseId}-${entry.updatedAt}`} style={styles.progressCard}>
@@ -1895,7 +1940,7 @@ function DesktopCourseCard({
           </Text>
         </View>
         <Text style={[styles.courseStatusBadge, isDemoCourse ? styles.courseStatusBadgeActive : styles.courseStatusBadgePending]}>
-          {isDemoCourse ? 'In Progress · demo' : enrollment.status}
+          {isDemoCourse ? 'In Progress · sample' : enrollment.status}
         </Text>
       </View>
       {course?.description ? (
@@ -2401,7 +2446,7 @@ function ProviderManagement({
           <Text style={styles.disclaimer}>{data.provider.dataStatus}</Text>
           {data.provider.pendingProfileChanges ? <Text style={styles.disclaimer}>Pending changes are awaiting administrator review.</Text> : null}
           <TextInput accessibilityLabel="Provider name" value={profileName} onChangeText={setProfileName} placeholder="Provider name" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={160} />
-          <TextInput accessibilityLabel="Provider location" value={profileLocation} onChangeText={setProfileLocation} placeholder="Location" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+          <FilterDropdown label="Provider location" items={['South Africa', 'Gauteng', 'Western Cape', 'KwaZulu-Natal', 'Eastern Cape', 'Free State', 'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape'].map((item) => ({ id: item, name: item }))} selectedId={profileLocation} onSelect={setProfileLocation} />
           <TextInput accessibilityLabel="Provider description" value={profileDescription} onChangeText={setProfileDescription} placeholder="Provider description" placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline maxLength={1000} />
           <Pressable accessibilityRole="button" disabled={busy} onPress={() => void submitProfile()} style={[styles.primaryButton, busy && styles.disabledButton]}>
             <Text style={styles.primaryButtonText}>{busy ? 'Submitting...' : 'Submit profile for review'}</Text>
@@ -2412,16 +2457,14 @@ function ProviderManagement({
       <View style={styles.enrollmentCard}>
         <Text style={styles.sectionTitle}>Submit a programme listing</Text>
         <Text style={styles.disclaimer}>New listings remain hidden until an administrator reviews them. Submission does not establish accreditation or course availability.</Text>
-        <TextInput accessibilityLabel="Programme title" value={title} onChangeText={setTitle} placeholder="Programme title" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
-        <TextInput accessibilityLabel="Programme description" value={description} onChangeText={setDescription} placeholder="Programme description" placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline maxLength={1000} />
-        <TextInput accessibilityLabel="Programme entry requirements" value={requirements} onChangeText={setRequirements} placeholder="Entry requirements and prerequisites (optional)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline maxLength={1000} />
-        <Text style={styles.filterLabel}>Category</Text>
-        <FilterChips items={categories.map((item) => ({ id: item.id, name: item.name }))} selectedId={categoryId} onSelect={setCategoryId} />
-        <Text style={styles.filterLabel}>Programme type</Text>
-        <FilterChips items={programmes.map((item) => ({ id: item.courseType, name: item.name }))} selectedId={programmeType} onSelect={setProgrammeType} />
-        <TextInput accessibilityLabel="Course duration" value={duration} onChangeText={setDuration} placeholder="Duration" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={80} />
-        <TextInput accessibilityLabel="Delivery method" value={deliveryMethod} onChangeText={setDeliveryMethod} placeholder="Delivery method" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={80} />
-        <TextInput accessibilityLabel="Programme location" value={location} onChangeText={setLocation} placeholder="Location" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+        <FilterDropdown label="Programme title" items={[{ id: '', name: 'Select programme title' }, ...providerProgrammeTitles.map((item) => ({ id: item, name: item }))]} selectedId={title} onSelect={setTitle} />
+        <FilterDropdown label="Programme description" items={[{ id: '', name: 'Select programme description' }, ...providerProgrammeDescriptions.map((item) => ({ id: item, name: item }))]} selectedId={description} onSelect={setDescription} />
+        <FilterDropdown label="Programme entry requirements" items={[{ id: '', name: 'Select entry requirements' }, ...providerEntryRequirements.map((item) => ({ id: item, name: item }))]} selectedId={requirements} onSelect={setRequirements} />
+        <FilterDropdown label="Category" items={[{ id: '', name: 'Select category' }, ...categories.map((item) => ({ id: item.id, name: item.name }))]} selectedId={categoryId} onSelect={setCategoryId} />
+        <FilterDropdown label="Programme type" items={[{ id: '', name: 'Select programme type' }, ...programmes.map((item) => ({ id: item.courseType, name: item.name }))]} selectedId={programmeType} onSelect={setProgrammeType} />
+        <FilterDropdown label="Course duration" items={['4 weeks', '8 weeks', '12 weeks', '6 months', '12 months'].map((item) => ({ id: item, name: item }))} selectedId={duration} onSelect={setDuration} />
+        <FilterDropdown label="Delivery method" items={['Online', 'Physical', 'Hybrid'].map((item) => ({ id: item, name: item }))} selectedId={deliveryMethod} onSelect={setDeliveryMethod} />
+        <FilterDropdown label="Programme location" items={['Online only', 'Gauteng', 'Western Cape', 'KwaZulu-Natal', 'Eastern Cape', 'Free State', 'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape'].map((item) => ({ id: item, name: item }))} selectedId={location} onSelect={setLocation} />
         <Text style={styles.filterLabel}>Eligible audiences</Text>
         <View style={styles.roleChoices}>
           {(['learner', 'farmer', 'employer', 'sdf'] as AppRole[]).map((role) => (
@@ -2741,17 +2784,12 @@ function LearningAdministration({
             <TextInput accessibilityLabel="Programme title" value={programmeDraft.title} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, title: value }))} placeholder="Programme title" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
             <TextInput accessibilityLabel="Programme description" value={programmeDraft.description} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, description: value }))} placeholder="Description" placeholderTextColor={palette.muted} style={[styles.formInput, styles.multilineInput]} multiline maxLength={1000} />
             <TextInput accessibilityLabel="Eligibility requirements" value={programmeDraft.requirements} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, requirements: value }))} placeholder="Eligibility requirements (optional)" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={1000} />
-            <Text style={styles.filterLabel}>Programme type</Text>
-            <FilterChips items={programmes.map((item) => ({ id: item.courseType, name: item.name }))} selectedId={programmeDraft.programmeType} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, programmeType: value }))} />
-            <Text style={styles.filterLabel}>Topic</Text>
-            <FilterChips items={categories.map((item) => ({ id: item.id, name: item.name }))} selectedId={programmeDraft.categoryId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, categoryId: value }))} />
-            <Text style={styles.filterLabel}>Training provider</Text>
-            <FilterChips items={providers.map((item) => ({ id: item.id, name: item.name }))} selectedId={programmeDraft.providerId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, providerId: value }))} />
-            <View style={styles.reviewActions}>
-              <TextInput accessibilityLabel="Programme duration" value={programmeDraft.duration} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, duration: value }))} placeholder="Duration" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} maxLength={80} />
-              <TextInput accessibilityLabel="Delivery method" value={programmeDraft.deliveryMethod} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, deliveryMethod: value }))} placeholder="Delivery method" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} maxLength={80} />
-            </View>
-            <TextInput accessibilityLabel="Programme location" value={programmeDraft.location} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, location: value }))} placeholder="Location" placeholderTextColor={palette.muted} style={styles.formInput} maxLength={120} />
+            <FilterDropdown label="Programme type" items={[{ id: '', name: 'Select programme type' }, ...programmes.map((item) => ({ id: item.courseType, name: item.name }))]} selectedId={programmeDraft.programmeType} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, programmeType: value }))} />
+            <FilterDropdown label="Topic" items={[{ id: '', name: 'Select topic' }, ...categories.map((item) => ({ id: item.id, name: item.name }))]} selectedId={programmeDraft.categoryId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, categoryId: value }))} />
+            <FilterDropdown label="Training provider" items={[{ id: '', name: 'Select training provider' }, ...providers.map((item) => ({ id: item.id, name: item.name }))]} selectedId={programmeDraft.providerId} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, providerId: value }))} />
+            <FilterDropdown label="Programme duration" items={['4 weeks', '8 weeks', '12 weeks', '6 months', '12 months'].map((item) => ({ id: item, name: item }))} selectedId={programmeDraft.duration} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, duration: value }))} />
+            <FilterDropdown label="Delivery method" items={['Online', 'Physical', 'Hybrid'].map((item) => ({ id: item, name: item }))} selectedId={programmeDraft.deliveryMethod} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, deliveryMethod: value }))} />
+            <FilterDropdown label="Programme location" items={['Online only', 'Gauteng', 'Western Cape', 'KwaZulu-Natal', 'Eastern Cape', 'Free State', 'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape'].map((item) => ({ id: item, name: item }))} selectedId={programmeDraft.location} onSelect={(value) => setProgrammeDraft((current) => ({ ...current, location: value }))} />
             <View style={styles.reviewActions}>
               <TextInput accessibilityLabel="Programme start date" value={programmeDraft.startDate} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, startDate: value }))} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} />
               <TextInput accessibilityLabel="Programme end date" value={programmeDraft.endDate} onChangeText={(value) => setProgrammeDraft((current) => ({ ...current, endDate: value }))} placeholder="End date (YYYY-MM-DD)" placeholderTextColor={palette.muted} style={[styles.formInput, styles.reviewAction]} />
@@ -3114,21 +3152,7 @@ function FilterChips({
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterChips}>
-      {items.map((item) => (
-        <Pressable
-          key={item.id || `all-${item.name}`}
-          accessibilityRole="button"
-          accessibilityState={{ selected: item.id === selectedId }}
-          onPress={() => onSelect(item.id)}
-          style={[styles.filterChip, item.id === selectedId && styles.filterChipSelected]}
-        >
-          <Text style={[styles.filterChipText, item.id === selectedId && styles.filterChipTextSelected]}>{item.name}</Text>
-        </Pressable>
-      ))}
-    </ScrollView>
-  );
+  return <FilterDropdown items={items} selectedId={selectedId} onSelect={onSelect} />;
 }
 
 function SectionHeading({ title, subtitle }: { title: string; subtitle?: string }) {
@@ -3175,6 +3199,26 @@ function MetricCard({ label, value }: { label: string; value: number }) {
     <View style={styles.metricCard}>
       <Text style={styles.metricValue}>{value}</Text>
       <Text style={styles.metaText}>{label}</Text>
+    </View>
+  );
+}
+
+function LearnerLearningOverview({ learningHome }: { learningHome: LearningHome }) {
+  const activeEnrollments = learningHome.enrollments.filter((entry) => entry.status !== 'Withdrawn');
+  const progressByCourse = new Map(learningHome.progress.map((entry) => [entry.courseId, entry]));
+  const inProgress = activeEnrollments.filter((entry) => {
+    const progress = progressByCourse.get(entry.courseId);
+    return progress && !progress.completed && progress.progressPercent > 0;
+  }).length;
+  const completed = activeEnrollments.filter((entry) => progressByCourse.get(entry.courseId)?.completed).length;
+  const modulesCompleted = learningHome.moduleProgress.filter((entry) => entry.lessonCompleted).length;
+
+  return (
+    <View style={styles.learnerOverview}>
+      <MetricCard label="Enrolled courses" value={activeEnrollments.length} />
+      <MetricCard label="In progress" value={inProgress} />
+      <MetricCard label="Completed" value={completed} />
+      <MetricCard label="Modules completed" value={modulesCompleted} />
     </View>
   );
 }
@@ -3230,6 +3274,8 @@ const styles = StyleSheet.create({
   filterRow: { marginTop: spacing.xs },
   filterClearButton: { alignSelf: 'flex-start', marginTop: spacing.xs, minHeight: 44, justifyContent: 'center' },
   courseFilterInputs: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.xs },
+  field: { marginTop: spacing.sm },
+  fieldLabel: { color: palette.text, fontSize: 12, fontWeight: '700', marginBottom: 5 },
   filterInput: { flex: 1, minWidth: 140, minHeight: 42, backgroundColor: palette.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: palette.border, color: palette.text, paddingHorizontal: spacing.sm },
   formInput: { minHeight: 44, backgroundColor: palette.background, borderWidth: 1, borderColor: palette.border, borderRadius: radius.sm, color: palette.text, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginTop: spacing.sm },
   multilineInput: { minHeight: 88, textAlignVertical: 'top' },
@@ -3373,6 +3419,7 @@ const styles = StyleSheet.create({
   resourceParagraph: { color: palette.text, fontSize: 14, lineHeight: 24, marginTop: spacing.lg },
   metricsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   metricCard: { flex: 1, minWidth: 90, alignItems: 'center', backgroundColor: palette.surface, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border, padding: spacing.md },
+  learnerOverview: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   metricValue: { color: palette.primary, fontSize: 20, fontWeight: '800' },
   progressCard: { backgroundColor: palette.surface, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border, padding: spacing.md, marginTop: spacing.sm },
   progressTrack: { height: 8, overflow: 'hidden', backgroundColor: palette.surfaceAlt, borderRadius: 4, marginTop: spacing.sm },

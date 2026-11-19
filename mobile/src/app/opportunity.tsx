@@ -509,8 +509,10 @@ function roleLabel(role: AppRole) {
     learner: 'Learners',
     farmer: 'Farmers',
     employer: 'Employers',
+    smme: 'SMMEs',
     sdf: 'Skills Development Facilitators',
     training_provider: 'Training Providers',
+    assessor: 'Assessors',
     administrator: 'Administrators',
     internal_staff: 'Internal staff',
   };

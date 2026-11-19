@@ -14,6 +14,7 @@ This is a local-development prototype, not a production security assessment. See
 - Native token persistence uses Expo SecureStore; web token persistence uses browser `sessionStorage`.
 - Application list reads are scoped to the authenticated user.
 - The server refuses to start without a configured `JWT_SECRET` (outside automated tests); there is no silent fallback to a guessable development secret.
+- New and reset passwords require at least 12 characters and a mix of uppercase and lowercase letters, a number, and a symbol.
 - CORS only accepts the origin(s) listed in `CLIENT_URL` (plus common local dev origins outside production). Non-browser clients, including the mobile app, are unaffected since they don't send an `Origin` header.
 - `/api/auth/login` and `/api/auth/register` are rate-limited per IP + identifier (8 attempts / 15 minutes) to slow down brute-force attempts.
 - Logout revocation is persisted to Neon (as a hash of the token, never the token itself) in addition to the in-memory check, so it survives a server restart.

@@ -3,6 +3,7 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
 const defaultApiBaseUrl = 'http://localhost:3000/api';
+const productionApiBaseUrl = 'https://myagriseta.onrender.com/api';
 const loopbackHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
 function getExpoDevelopmentHost(): string | null {
@@ -18,18 +19,24 @@ function getExpoDevelopmentHost(): string | null {
 }
 
 function getApiBaseUrl(): string {
-  const configuredUrl = process.env.EXPO_PUBLIC_API_URL?.trim() || defaultApiBaseUrl;
-  if (Platform.OS === 'web') return configuredUrl;
+  const configuredUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  const apiUrl = configuredUrl || (__DEV__ ? defaultApiBaseUrl : productionApiBaseUrl);
 
   try {
-    const url = new URL(configuredUrl);
+    const url = new URL(apiUrl);
+    if (!__DEV__ && loopbackHosts.has(url.hostname)) {
+      return productionApiBaseUrl;
+    }
+
+    if (Platform.OS === 'web') return url.toString().replace(/\/$/, '');
+
     if (loopbackHosts.has(url.hostname)) {
       const developmentHost = getExpoDevelopmentHost();
       if (developmentHost) url.hostname = developmentHost;
     }
     return url.toString().replace(/\/$/, '');
   } catch {
-    return configuredUrl;
+    return __DEV__ ? apiUrl : productionApiBaseUrl;
   }
 }
 
@@ -98,7 +105,9 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   } catch {
     const connectionHint = Platform.OS === 'web'
       ? 'Check that the backend is running and reachable.'
-      : 'Check that your phone and computer are on the same Wi-Fi, the backend is running, and the computer firewall allows port 3000.';
+      : __DEV__
+        ? 'Check that your phone and computer are on the same Wi-Fi, the backend is running, and the computer firewall allows port 3000.'
+        : 'Check your internet connection and try again. The service may be temporarily unavailable.';
     throw new Error(`Could not connect to MyAgriSETA. ${connectionHint}`);
   }
 

@@ -11,19 +11,16 @@ type LearnerSidebarProps = {
   role: string;
   onDashboard: () => void;
   onCourses: () => void;
+  onOpportunities?: () => void;
+  onPassport?: () => void;
+  onNotifications?: () => void;
+  onProfile?: () => void;
 };
 
 type LearnerSidebarDrawerProps = LearnerSidebarProps & {
   visible: boolean;
   onClose: () => void;
 };
-
-const plannedItems: { label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { label: 'Assignments', icon: 'document-text-outline' },
-  { label: 'Quizzes', icon: 'flash-outline' },
-  { label: 'Live Sessions', icon: 'videocam-outline' },
-  { label: 'Certificates', icon: 'ribbon-outline' },
-];
 
 export function LearnerSidebar({
   active,
@@ -32,10 +29,17 @@ export function LearnerSidebar({
   role,
   onDashboard,
   onCourses,
+  onOpportunities,
+  onPassport,
+  onNotifications,
+  onProfile,
 }: LearnerSidebarProps) {
   return (
     <View style={styles.sidebar}>
-      <Text style={styles.brand}>AgriConnect 360</Text>
+      <View style={styles.brandRow}>
+        <View style={styles.brandMark}><Ionicons name="leaf" size={16} color="#FFFFFF" /></View>
+        <View><Text style={styles.brand}>AgriConnect 360</Text><Text style={styles.brandSub}>MyAgriSETA</Text></View>
+      </View>
       <View style={styles.navigation}>
         <Pressable
           accessibilityRole="button"
@@ -53,15 +57,12 @@ export function LearnerSidebar({
           style={[styles.item, active === 'courses' && styles.itemSelected]}
         >
           <Ionicons name="book-outline" size={17} color="#D9E1DC" />
-          <Text style={styles.itemText}>My Courses</Text>
+          <Text style={styles.itemText}>AgriLearn</Text>
         </Pressable>
-        {plannedItems.map((item) => (
-          <View key={item.label} style={styles.itemPlanned}>
-            <Ionicons name={item.icon} size={17} color="#AAB8B0" />
-            <Text style={styles.itemTextPlanned}>{item.label}</Text>
-            <Text style={styles.plannedTag}>Planned</Text>
-          </View>
-        ))}
+        <SidebarAction label="Opportunities" icon="briefcase-outline" onPress={onOpportunities} />
+        <SidebarAction label="Skills Passport" icon="id-card-outline" onPress={onPassport} />
+        <SidebarAction label="Notifications" icon="notifications-outline" onPress={onNotifications} />
+        <SidebarAction label="Profile" icon="person-outline" onPress={onProfile} />
       </View>
       <View style={styles.user}>
         <View style={styles.avatar}>
@@ -73,6 +74,15 @@ export function LearnerSidebar({
         </View>
       </View>
     </View>
+  );
+}
+
+function SidebarAction({ label, icon, onPress }: { label: string; icon: keyof typeof Ionicons.glyphMap; onPress?: () => void }) {
+  return (
+    <Pressable accessibilityRole="button" disabled={!onPress} onPress={onPress} style={styles.item}>
+      <Ionicons name={icon} size={17} color={onPress ? '#D9E1DC' : '#718078'} />
+      <Text style={[styles.itemText, !onPress && styles.itemTextPlanned]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -119,16 +129,19 @@ export function LearnerSidebarDrawer({
 }
 
 const styles = StyleSheet.create({
-  sidebar: { width: 228, flex: 1, backgroundColor: '#18211D', paddingHorizontal: 12, paddingTop: 20 },
+  sidebar: { width: 228, flex: 1, backgroundColor: '#0B3B20', paddingHorizontal: 12, paddingTop: 20 },
   menuButton: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#FFFFFF' },
   drawerOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 1000, flexDirection: 'row', backgroundColor: 'rgba(0, 0, 0, 0.38)' },
   drawerBackdrop: { flex: 1 },
   drawerPanel: { width: 268, maxWidth: '82%', flexDirection: 'row', backgroundColor: '#18211D', paddingTop: 8, paddingRight: 8 },
   drawerCloseButton: { width: 32, height: 42, alignItems: 'center', justifyContent: 'center' },
-  brand: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', paddingHorizontal: 12 },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
+  brandMark: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#2A8A4F' },
+  brand: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  brandSub: { color: '#A8D9B6', fontSize: 9, marginTop: 1 },
   navigation: { gap: 3, marginTop: 30 },
   item: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 12, borderLeftWidth: 2, borderLeftColor: 'transparent', backgroundColor: 'transparent', paddingHorizontal: 10 },
-  itemSelected: { borderLeftColor: palette.accent, backgroundColor: '#303936' },
+  itemSelected: { borderLeftColor: palette.accent, backgroundColor: '#1C6A39', borderRadius: 6 },
   itemText: { color: '#D9E1DC', fontSize: 13, fontWeight: '600' },
   itemPlanned: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12 },
   itemTextPlanned: { flex: 1, color: '#AAB8B0', fontSize: 13 },

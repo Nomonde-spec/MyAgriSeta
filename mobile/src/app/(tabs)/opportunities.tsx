@@ -12,12 +12,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+  TextInput as NativeTextInput,
+  TextInputProps,
+  Modal,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BackButton } from '@/components/navigation/back-button';
+import { FilterDropdown } from '@/components/filter-dropdown';
 import { downloadApplicationDocument, downloadOpportunityDocument } from '@/lib/application-documents';
 import { useAuth } from '@/context/auth-context';
 import { ApiError, apiFetch } from '@/lib/api';
@@ -214,6 +217,111 @@ const sortOptions = [
   { value: 'title', label: 'Title' },
   { value: 'newest', label: 'Newest' },
 ];
+const durationOptions = ['4 weeks', '8 weeks', '12 weeks', '6 months', '12 months'];
+const accreditationOptions = ['Accredited programme', 'Provider-recognised programme', 'Non-accredited skills programme', 'Pending confirmation'];
+const capacityOptions = ['10 learners', '20 learners', '30 learners', '50 learners', '100 learners'];
+const feeOptions = ['Free', 'R500', 'R1 000', 'R2 500', 'R5 000', 'Contact provider'];
+const locationOptions = ['Online only', 'Gauteng', 'Western Cape', 'KwaZulu-Natal', 'Eastern Cape', 'Free State', 'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape'];
+const qualificationOptions = ['No prior qualification required', 'Grade 9 or equivalent', 'Grade 12 or equivalent', 'Relevant agricultural experience', 'Relevant certificate or diploma'];
+const requirementOptions = ['No additional requirements', 'Basic computer literacy', 'Access to a smartphone or computer', 'Relevant agricultural experience', 'Attend an orientation session'];
+const documentOptions = ['No documents required', 'CV or learner profile', 'Proof of qualification', 'Proof of agricultural experience', 'Motivation statement'];
+const trainingTitleOptions = [
+  'Crop Production Skills Programme',
+  'Animal Production Skills Programme',
+  'Horticulture and Vegetable Production',
+  'Agricultural Business Management',
+  'Farm Safety and Compliance Training',
+];
+const trainingDescriptionOptions = [
+  'Practical agricultural training that develops workplace-ready skills for sustainable farming.',
+  'A structured programme combining agricultural knowledge, practical activities, and learner support.',
+  'Training designed to help participants improve production, business planning, and farm management skills.',
+  'An introductory agricultural programme for learners preparing for work or further study.',
+];
+const learningOutcomeOptions = [
+  'Apply safe and sustainable agricultural production practices.',
+  'Demonstrate practical crop, livestock, or horticultural skills.',
+  'Use basic farm records, budgets, and production plans.',
+  'Identify workplace safety, quality, and compliance requirements.',
+  'Develop entry-level skills for agricultural employment or enterprise.',
+];
+
+function TextInput({ accessibilityLabel, placeholder, ...props }: TextInputProps) {
+  const label = accessibilityLabel || placeholder;
+  return (
+    <View style={styles.field}>
+      {label ? <Text style={styles.fieldLabel}>{label}</Text> : null}
+      <NativeTextInput
+        {...props}
+        accessibilityLabel={accessibilityLabel}
+        placeholder={placeholder}
+        placeholderTextColor={palette.muted}
+      />
+    </View>
+  );
+}
+
+function OptionField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <FilterDropdown
+      label={label}
+      items={[{ id: '', name: `Select ${label.toLowerCase()}` }, ...options.map((item) => ({ id: item, name: item }))]}
+      selectedId={value}
+      onSelect={onChange}
+    />
+  );
+}
+
+function CalendarField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const initial = value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date();
+  const [month, setMonth] = useState(new Date(initial.getFullYear(), initial.getMonth(), 1));
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const firstDay = new Date(year, monthIndex, 1).getDay();
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const days = Array.from({ length: firstDay + daysInMonth }, (_, index) => index < firstDay ? null : index - firstDay + 1);
+  const formatDate = (day: number) => `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={() => setOpen(true)} style={styles.dateField}>
+        <Text style={value ? styles.dateValue : styles.datePlaceholder}>{value || 'Select a date'}</Text>
+        <Ionicons name="calendar-outline" size={18} color={palette.primaryDark} />
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.calendarBackdrop} onPress={() => setOpen(false)}>
+          <Pressable style={styles.calendarCard} onPress={(event) => event.stopPropagation()}>
+            <View style={styles.calendarHeader}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => setMonth(new Date(year, monthIndex - 1, 1))}><Ionicons name="chevron-back" size={20} color={palette.primary} /></Pressable>
+              <Text style={styles.calendarTitle}>{month.toLocaleDateString('en-ZA', { month: 'long', year: 'numeric' })}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => setMonth(new Date(year, monthIndex + 1, 1))}><Ionicons name="chevron-forward" size={20} color={palette.primary} /></Pressable>
+            </View>
+            <View style={styles.calendarWeek}><Text style={styles.calendarWeekText}>Su</Text><Text style={styles.calendarWeekText}>Mo</Text><Text style={styles.calendarWeekText}>Tu</Text><Text style={styles.calendarWeekText}>We</Text><Text style={styles.calendarWeekText}>Th</Text><Text style={styles.calendarWeekText}>Fr</Text><Text style={styles.calendarWeekText}>Sa</Text></View>
+            <View style={styles.calendarGrid}>
+              {days.map((day, index) => day ? (
+                <Pressable key={index} accessibilityRole="button" accessibilityLabel={formatDate(day)} onPress={() => { onChange(formatDate(day)); setOpen(false); }} style={[styles.calendarDay, value === formatDate(day) && styles.calendarDaySelected]}>
+                  <Text style={[styles.calendarDayText, value === formatDate(day) && styles.calendarDayTextSelected]}>{day}</Text>
+                </Pressable>
+              ) : <View key={index} style={styles.calendarDay} />)}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
+  );
+}
 
 export default function OpportunitiesScreen() {
   const params = useLocalSearchParams<{ category?: string; workspace?: string }>();
@@ -596,51 +704,43 @@ export default function OpportunitiesScreen() {
             <Text style={styles.clearText}>Clear filters</Text>
           </Pressable>
         </View>
-        <View style={styles.chipRow}>
-          <FilterChip label="All" selected={!category} onPress={() => setCategory('')} />
-          {visibleCategories.map((item) => (
-            <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />
-          ))}
-        </View>
+        <FilterDropdown
+          label="Category"
+          items={[{ id: '', name: 'All' }, ...visibleCategories.map((item) => ({ id: item, name: item }))]}
+          selectedId={category}
+          onSelect={setCategory}
+        />
 
         <Text style={styles.filterLabel}>Employment type</Text>
-        <View style={styles.chipRow}>
-          <FilterChip label="All types" selected={!employmentTypeFilter} onPress={() => setEmploymentTypeFilter('')} />
-          {employmentTypes.map((item) => (
-            <FilterChip key={item} label={item} selected={employmentTypeFilter === item} onPress={() => setEmploymentTypeFilter(employmentTypeFilter === item ? '' : item)} />
-          ))}
-        </View>
+        <FilterDropdown
+          items={[{ id: '', name: 'All types' }, ...employmentTypes.map((item) => ({ id: item, name: item }))]}
+          selectedId={employmentTypeFilter}
+          onSelect={setEmploymentTypeFilter}
+        />
 
         <Text style={styles.filterLabel}>Audience</Text>
-        <View style={styles.chipRow}>
-          <FilterChip label="All audiences" selected={!audience} onPress={() => setAudience('')} />
-          {audiences.map((item) => (
-            <FilterChip
-              key={item.value}
-              label={item.label}
-              selected={audience === item.value}
-              onPress={() => setAudience(audience === item.value ? '' : item.value)}
-            />
-          ))}
-        </View>
+        <FilterDropdown
+          items={[{ id: '', name: 'All audiences' }, ...audiences.map((item) => ({ id: item.value, name: item.label }))]}
+          selectedId={audience}
+          onSelect={setAudience}
+        />
 
         <Text style={styles.filterLabel}>Application status</Text>
-        <View style={styles.chipRow}>
-          <FilterChip label="All statuses" selected={!status} onPress={() => setStatus('')} />
-          {statuses.map((item) => (
-            <FilterChip key={item} label={item} selected={status === item} onPress={() => setStatus(item)} />
-          ))}
-        </View>
+        <FilterDropdown
+          items={[{ id: '', name: 'All statuses' }, ...statuses.map((item) => ({ id: item, name: item }))]}
+          selectedId={status}
+          onSelect={setStatus}
+        />
 
         <View style={styles.filterHeading}>
           <Text style={styles.filterLabel}>Sort by</Text>
           {updating ? <ActivityIndicator size="small" color={palette.primary} /> : null}
         </View>
-        <View style={styles.chipRow}>
-          {sortOptions.map((item) => (
-            <FilterChip key={item.value} label={item.label} selected={sort === item.value} onPress={() => setSort(item.value)} />
-          ))}
-        </View>
+        <FilterDropdown
+          items={sortOptions.map((item) => ({ id: item.value, name: item.label }))}
+          selectedId={sort}
+          onSelect={setSort}
+        />
 
         <View style={styles.modeRow}>
           <Pressable
@@ -1239,30 +1339,40 @@ function StakeholderOpportunityManagement({
               ? 'Submit a skills development opportunity'
               : 'Submit a training programme'}
       </Text>
-      <TextInput accessibilityLabel={`${isEmployerTrainingNeed ? 'Training need' : isEmployer ? 'Job or workplace opportunity' : 'Training opportunity'} title`} value={title} onChangeText={setTitle} placeholder={`${isEmployerTrainingNeed ? 'Training need' : isEmployer ? 'Job or workplace opportunity' : 'Training opportunity'} title`} style={styles.managementInput} maxLength={120} />
-      <TextInput accessibilityLabel="Opportunity description" value={description} onChangeText={setDescription} placeholder="Description" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={2000} />
+      {!isEmployer && !isEmployerTrainingNeed ? (
+        <>
+          <OptionField label="Training opportunity title" value={title} options={trainingTitleOptions} onChange={setTitle} />
+          <OptionField label="Opportunity description" value={description} options={trainingDescriptionOptions} onChange={setDescription} />
+        </>
+      ) : (
+        <>
+          <TextInput accessibilityLabel={`${isEmployerTrainingNeed ? 'Training need' : 'Job or workplace opportunity'} title`} value={title} onChangeText={setTitle} placeholder={`${isEmployerTrainingNeed ? 'Training need' : 'Job or workplace opportunity'} title`} style={styles.managementInput} maxLength={120} />
+          <TextInput accessibilityLabel="Opportunity description" value={description} onChangeText={setDescription} placeholder="Description" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={2000} />
+        </>
+      )}
       {isEmployer ? (
         <>
-          <Text style={styles.filterLabel}>Opportunity type</Text>
-          <View style={styles.chipRow}>
-            {opportunityCategories.map((item) => (
-              <FilterChip key={item} label={item} selected={category === item} onPress={() => {
+          <FilterDropdown
+            label="Opportunity type"
+            items={[{ id: '', name: 'Select an opportunity type' }, ...opportunityCategories.map((item) => ({ id: item, name: item }))]}
+            selectedId={category}
+            onSelect={(item) => {
                 setCategory(item);
                 setAudience(item === 'Training Need' ? 'training_provider' : 'learner');
-              }} />
-            ))}
-          </View>
+              }}
+          />
           {isEmployerTrainingNeed ? (
             <>
-              <Text style={styles.filterLabel}>Training sponsor or delivery partner</Text>
-              <View style={styles.chipRow}>
-                {[
+              <FilterDropdown
+                label="Training sponsor or delivery partner"
+                items={[
+                  { value: '', label: 'Select a delivery partner' },
                   { value: 'training_provider', label: 'Training providers' },
                   { value: 'sdf', label: 'SDFs' },
-                ].map((item) => (
-                  <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />
-                ))}
-              </View>
+                ].map((item) => ({ id: item.value, name: item.label }))}
+                selectedId={audience}
+                onSelect={setAudience}
+              />
               <Text style={styles.managementMeta}>This listing is for learners seeking training. Select the training provider or SDF sponsoring or delivering it. Learners can apply after administrator approval and publication. Do not include employee names or sensitive personal information.</Text>
             </>
           ) : null}
@@ -1270,20 +1380,26 @@ function StakeholderOpportunityManagement({
       ) : null}
       {!isEmployer || isEmployerTrainingNeed ? (
         <>
-          {!isEmployer ? <><Text style={styles.filterLabel}>Opportunity category</Text><View style={styles.chipRow}>
-            {opportunityCategories.map((item) => (
-              <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />
-            ))}
-          </View></> : null}
+          {!isEmployer ? (
+            <FilterDropdown
+              label="Opportunity category"
+              items={[{ id: '', name: 'Select a category' }, ...opportunityCategories.map((item) => ({ id: item, name: item }))]}
+              selectedId={category}
+              onSelect={setCategory}
+            />
+          ) : null}
           {!isEmployerTrainingNeed ? (
             <>
-              <Text style={styles.filterLabel}>Eligible audience</Text>
-              <View style={styles.chipRow}>
-                {audiences.map((item) => (
-              <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />
-            ))}
-            <FilterChip label="All eligible users" selected={audience === '*'} onPress={() => setAudience('*')} />
-              </View>
+              <FilterDropdown
+                label="Eligible audience"
+                items={[
+                  { id: '', name: 'Select an audience' },
+                  ...audiences.map((item) => ({ id: item.value, name: item.label })),
+                  { id: '*', name: 'All eligible users' },
+                ]}
+                selectedId={audience}
+                onSelect={setAudience}
+              />
             </>
           ) : null}
           {isProvider && category === 'Funding' ? (
@@ -1304,27 +1420,31 @@ function StakeholderOpportunityManagement({
               <Text style={styles.managementMeta}>Funding submissions must support agricultural training or skills development. Administrator review does not guarantee funding approval.</Text>
             </>
           ) : null}
-          <TextInput
-            accessibilityLabel={isEmployerTrainingNeed ? 'Employee training objectives' : isSdf ? 'Training objectives' : 'Learning outcomes'}
-            value={trainingObjectives}
-            onChangeText={setTrainingObjectives}
-            placeholder={isEmployerTrainingNeed ? 'What training do employees need?' : isSdf ? 'Training objectives' : 'Learning outcomes'}
-            style={[styles.managementInput, styles.managementMultiline]}
-            multiline
-            maxLength={2000}
-          />
+          {!isEmployer && !isEmployerTrainingNeed ? (
+            <OptionField label="Learning outcomes" value={trainingObjectives} options={learningOutcomeOptions} onChange={setTrainingObjectives} />
+          ) : (
+            <TextInput
+              accessibilityLabel={isEmployerTrainingNeed ? 'Employee training objectives' : 'Training objectives'}
+              value={trainingObjectives}
+              onChangeText={setTrainingObjectives}
+              placeholder={isEmployerTrainingNeed ? 'What training do employees need?' : 'Training objectives'}
+              style={[styles.managementInput, styles.managementMultiline]}
+              multiline
+              maxLength={2000}
+            />
+          )}
           {isProvider ? (
             <>
-              <TextInput accessibilityLabel="Accreditation information" value={accreditation} onChangeText={setAccreditation} placeholder="Accreditation information or reference" style={styles.managementInput} maxLength={250} />
-              <TextInput accessibilityLabel="Programme duration" value={duration} onChangeText={setDuration} placeholder="Training duration" style={styles.managementInput} maxLength={80} />
-              <Text style={styles.filterLabel}>Training delivery method</Text>
-              <View style={styles.chipRow}>
-                {['Online', 'Physical', 'Hybrid'].map((item) => (
-                  <FilterChip key={item} label={item} selected={deliveryMethod === item} onPress={() => setDeliveryMethod(item)} />
-                ))}
-              </View>
-              <TextInput accessibilityLabel="Learner capacity" value={capacity} onChangeText={setCapacity} placeholder="Available learner capacity" style={styles.managementInput} keyboardType="number-pad" maxLength={5} />
-              <TextInput accessibilityLabel="Programme fee in ZAR" value={fees} onChangeText={setFees} placeholder="Programme fee in ZAR (optional)" style={styles.managementInput} keyboardType="decimal-pad" maxLength={12} />
+              <OptionField label="Accreditation information" value={accreditation} options={accreditationOptions} onChange={setAccreditation} />
+              <OptionField label="Programme duration" value={duration} options={durationOptions} onChange={setDuration} />
+              <FilterDropdown
+                label="Training delivery method"
+                items={[{ id: '', name: 'Select a delivery method' }, ...['Online', 'Physical', 'Hybrid'].map((item) => ({ id: item, name: item }))]}
+                selectedId={deliveryMethod}
+                onSelect={setDeliveryMethod}
+              />
+              <OptionField label="Learner capacity" value={capacity} options={capacityOptions} onChange={setCapacity} />
+              <OptionField label="Programme fee in ZAR" value={fees} options={feeOptions} onChange={setFees} />
             </>
           ) : (
             <>
@@ -1332,21 +1452,21 @@ function StakeholderOpportunityManagement({
               <TextInput accessibilityLabel="Number of participants" value={participantCount} onChangeText={setParticipantCount} placeholder="Number of employees / participants" style={styles.managementInput} keyboardType="number-pad" maxLength={5} />
             </>
           )}
-          <TextInput accessibilityLabel="Programme start date" value={startDate} onChangeText={setStartDate} placeholder="Start date (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
-          <TextInput accessibilityLabel="Programme end date" value={endDate} onChangeText={setEndDate} placeholder="End date (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
+          <CalendarField label="Programme start date" value={startDate} onChange={setStartDate} />
+          <CalendarField label="Programme end date" value={endDate} onChange={setEndDate} />
         </>
       ) : null}
-      <TextInput accessibilityLabel="Opportunity location" value={location} onChangeText={setLocation} placeholder="Location" style={styles.managementInput} maxLength={120} />
+      <OptionField label="Opportunity location" value={location} options={locationOptions} onChange={setLocation} />
       {isEmployer && !isEmployerTrainingNeed ? (
         <TextInput accessibilityLabel="Employment type" value={employmentType} onChangeText={setEmploymentType} placeholder="Employment type (for example, permanent)" style={styles.managementInput} maxLength={80} />
       ) : null}
       {!isEmployerTrainingNeed ? (
-        <TextInput accessibilityLabel={isEmployer ? 'Qualifications' : 'Entry qualifications'} value={qualifications} onChangeText={setQualifications} placeholder={isEmployer ? 'Required qualifications' : 'Entry qualifications'} style={styles.managementInput} maxLength={500} />
+        <OptionField label={isEmployer ? 'Qualifications' : 'Entry qualifications'} value={qualifications} options={qualificationOptions} onChange={setQualifications} />
       ) : null}
-      <TextInput accessibilityLabel={isEmployerTrainingNeed ? 'Training request requirements' : isEmployer ? 'Job requirements' : 'Eligibility requirements'} value={requirements} onChangeText={setRequirements} placeholder={isEmployerTrainingNeed ? 'Additional training requirements (optional)' : 'Requirements (one per line)'} style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1200} />
-      <TextInput accessibilityLabel="Required application documents" value={requiredDocuments} onChangeText={setRequiredDocuments} placeholder="Required application documents (one per line)" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={804} />
+      <OptionField label={isEmployerTrainingNeed ? 'Training request requirements' : isEmployer ? 'Job requirements' : 'Eligibility requirements'} value={requirements} options={requirementOptions} onChange={setRequirements} />
+      <OptionField label="Required application documents" value={requiredDocuments} options={documentOptions} onChange={setRequiredDocuments} />
       <Text style={styles.managementMeta}>Do not request identity, passport, bank, health, or biometric documents. Applicants can upload PDF, JPG, or PNG files up to 2 MB each.</Text>
-      <TextInput accessibilityLabel="Application deadline" value={closingDate} onChangeText={setClosingDate} placeholder="Deadline (YYYY-MM-DD)" style={styles.managementInput} maxLength={10} />
+      <CalendarField label="Application deadline" value={closingDate} onChange={setClosingDate} />
       <TextInput accessibilityLabel="Application instructions" value={applicationInstructions} onChangeText={setApplicationInstructions} placeholder="How to apply" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={1000} />
       {!isEmployer ? (
         <>
@@ -2154,45 +2274,58 @@ function AdministratorOpportunityManagement({ workspace }: { workspace: 'all' | 
             count={visibleItems.length}
           />
           <TextInput accessibilityLabel="Search content submissions" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
-          <View style={styles.chipRow}>
-            {statusFilters.map((item) => <FilterChip key={item} label={item} selected={filter === item} onPress={() => setFilter(item)} />)}
-          </View>
-          <Text style={styles.filterLabel}>Filter by category</Text>
-          <View style={styles.chipRow}>
-            {['All', 'Bursaries & funding', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
-          </View>
-          <Text style={styles.filterLabel}>Submitted</Text>
-          <View style={styles.chipRow}>
-            {dateFilters.map((item) => <FilterChip key={item} label={item} selected={dateFilter === item} onPress={() => {
+          <FilterDropdown
+            label="Status"
+            items={statusFilters.map((item) => ({ id: item, name: item }))}
+            selectedId={filter}
+            onSelect={setFilter}
+          />
+          <FilterDropdown
+            label="Filter by category"
+            items={['All', 'Bursaries & funding', ...contentCategories].map((item) => ({ id: item, name: item }))}
+            selectedId={categoryFilter}
+            onSelect={setCategoryFilter}
+          />
+          <FilterDropdown
+            label="Submitted"
+            items={dateFilters.map((item) => ({ id: item, name: item }))}
+            selectedId={dateFilter}
+            onSelect={(item) => {
               setDateFilter(item);
               setSubmissionCutoff(item === 'All time' ? 0 : Date.now() - (item === 'Last 7 days' ? 7 : 30) * 86_400_000);
-            }} />)}
-          </View>
+            }}
+          />
         </>
       ) : null}
 
       {workspace === 'review' ? (
         <>
           <TextInput accessibilityLabel="Search submitted opportunities" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
-          <Text style={styles.filterLabel}>Review status</Text>
-          <View style={styles.chipRow}>
-            {['Review queue', ...statusFilters.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item))]
-              .map((item) => <FilterChip key={item} label={item} selected={filter === item} onPress={() => setFilter(item)} />)}
-          </View>
-          <Text style={styles.filterLabel}>Category</Text>
-          <View style={styles.chipRow}>
-            {['All', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
-          </View>
+          <FilterDropdown
+            label="Review status"
+            items={['Review queue', ...statusFilters.filter((item) => ['Pending Approval', 'Pending Review', 'Changes Requested'].includes(item))]
+              .map((item) => ({ id: item, name: item }))}
+            selectedId={filter}
+            onSelect={setFilter}
+          />
+          <FilterDropdown
+            label="Category"
+            items={['All', ...contentCategories].map((item) => ({ id: item, name: item }))}
+            selectedId={categoryFilter}
+            onSelect={setCategoryFilter}
+          />
         </>
       ) : null}
 
       {workspace === 'published' ? (
         <>
           <TextInput accessibilityLabel="Search published opportunities" value={searchText} onChangeText={setSearchText} placeholder="Search title or organisation" style={styles.managementInput} />
-          <Text style={styles.filterLabel}>Category</Text>
-          <View style={styles.chipRow}>
-            {['All', ...contentCategories].map((item) => <FilterChip key={item} label={item} selected={categoryFilter === item} onPress={() => setCategoryFilter(item)} />)}
-          </View>
+          <FilterDropdown
+            label="Category"
+            items={['All', ...contentCategories].map((item) => ({ id: item, name: item }))}
+            selectedId={categoryFilter}
+            onSelect={setCategoryFilter}
+          />
         </>
       ) : null}
 
@@ -2295,15 +2428,22 @@ function AdministratorOpportunityManagement({ workspace }: { workspace: 'all' | 
         {formStep === 0 ? (
           <>
             <TextInput accessibilityLabel="Opportunity title" value={title} onChangeText={setTitle} placeholder="Opportunity title *" style={styles.managementInput} maxLength={120} />
-            <Text style={styles.filterLabel}>Opportunity category *</Text>
-            <View style={styles.chipRow}>
-              {contentCategories.map((item) => <FilterChip key={item} label={item} selected={category === item} onPress={() => setCategory(item)} />)}
-            </View>
-            <Text style={styles.filterLabel}>Primary eligible audience *</Text>
-            <View style={styles.chipRow}>
-              {audiences.map((item) => <FilterChip key={item.value} label={item.label} selected={audience === item.value} onPress={() => setAudience(item.value)} />)}
-              <FilterChip label="All eligible users" selected={audience === '*'} onPress={() => setAudience('*')} />
-            </View>
+            <FilterDropdown
+              label="Opportunity category *"
+              items={[{ id: '', name: 'Select a category' }, ...contentCategories.map((item) => ({ id: item, name: item }))]}
+              selectedId={category}
+              onSelect={setCategory}
+            />
+            <FilterDropdown
+              label="Primary eligible audience *"
+              items={[
+                { id: '', name: 'Select an audience' },
+                ...audiences.map((item) => ({ id: item.value, name: item.label })),
+                { id: '*', name: 'All eligible users' },
+              ]}
+              selectedId={audience}
+              onSelect={setAudience}
+            />
             <TextInput accessibilityLabel="Organisation or institution" value={organization} onChangeText={setOrganization} placeholder="Organisation or institution *" style={styles.managementInput} maxLength={160} />
             <TextInput accessibilityLabel="Opportunity location" value={location} onChangeText={setLocation} placeholder="Province or location *" style={styles.managementInput} maxLength={120} />
             <TextInput accessibilityLabel="Opportunity description" value={description} onChangeText={setDescription} placeholder="Opportunity description *" style={[styles.managementInput, styles.managementMultiline]} multiline maxLength={2000} />
@@ -2804,7 +2944,23 @@ const styles = StyleSheet.create({
   managementTitle: { color: palette.text, fontSize: 15, fontWeight: '800' },
   managementMeta: { color: palette.muted, fontSize: 11, lineHeight: 16, marginTop: spacing.xs },
   schedulePanel: { padding: spacing.sm, marginTop: spacing.md, backgroundColor: palette.surfaceAlt, borderRadius: radius.md, borderWidth: 1, borderColor: palette.border },
-  managementInput: { minHeight: 42, borderWidth: 1, borderColor: palette.border, borderRadius: radius.sm, backgroundColor: palette.surface, color: palette.text, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginTop: spacing.sm },
+  field: { marginTop: spacing.sm },
+  fieldLabel: { color: palette.text, fontSize: 12, fontWeight: '700', marginBottom: 5 },
+  dateField: { minHeight: 42, borderWidth: 1, borderColor: palette.border, borderRadius: radius.sm, backgroundColor: palette.surface, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dateValue: { color: palette.text, fontSize: 14 },
+  datePlaceholder: { color: palette.muted, fontSize: 14 },
+  calendarBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
+  calendarCard: { width: '100%', maxWidth: 360, backgroundColor: palette.surface, borderRadius: radius.lg, padding: spacing.md },
+  calendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
+  calendarTitle: { color: palette.text, fontSize: 16, fontWeight: '800' },
+  calendarWeek: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: spacing.xs },
+  calendarWeekText: { color: palette.muted, fontSize: 12, fontWeight: '700', textAlign: 'center', width: '14.28%' },
+  calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  calendarDay: { width: '14.28%', height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm },
+  calendarDaySelected: { backgroundColor: palette.primary },
+  calendarDayText: { color: palette.text, fontSize: 14 },
+  calendarDayTextSelected: { color: '#FFFFFF', fontWeight: '800' },
+  managementInput: { minHeight: 42, borderWidth: 1, borderColor: palette.border, borderRadius: radius.sm, backgroundColor: palette.surface, color: palette.text, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   managementMultiline: { minHeight: 76, textAlignVertical: 'top' },
   managementActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   submissionSummary: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm, backgroundColor: palette.surface, borderRadius: radius.md, padding: spacing.sm, marginTop: spacing.sm },

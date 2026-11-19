@@ -31,6 +31,10 @@ const {
   applications,
   auditLogs,
   sdfWorkforceRecords,
+  smmeBusinessProfiles,
+  smmeSupportRequests,
+  assessorProfiles,
+  assessorAssignments,
   rolePermissions,
   defaultPermissions,
 } = require('./data');
@@ -58,16 +62,22 @@ if (!JWT_SECRET) {
 const users = buildSeedUsers();
 const revokedTokens = new Set();
 const announcementEmailTimers = new Map();
-const learningRoles = ['learner', 'farmer', 'employer', 'sdf', 'training_provider', 'administrator', 'internal_staff'];
+const demoRoleCredentials = {
+  smme: { userId: 'usr-smme', password: 'Ayanda123!' },
+  assessor: { userId: 'usr-assessor', password: 'Boitumelo123!' },
+};
+const learningRoles = ['learner', 'farmer', 'employer', 'smme', 'sdf', 'training_provider', 'assessor', 'administrator', 'internal_staff'];
 const selfRegistrationRoles = ['learner', 'farmer', 'employer', 'sdf', 'training_provider'];
 const roleVerificationFields = {
   learner: [],
   farmer: ['farmName', 'province', 'verificationReference'],
   employer: ['organization', 'registrationNumber', 'workEmail'],
+  smme: ['organization', 'registrationNumber', 'workEmail'],
   sdf: ['organization', 'workEmail', 'authorizationReference'],
   training_provider: ['organization', 'registrationBody', 'providerReference'],
+  assessor: [],
 };
-const opportunityAudiences = ['learner', 'farmer', 'employer', 'sdf', 'training_provider', '*'];
+const opportunityAudiences = ['learner', 'farmer', 'employer', 'smme', 'sdf', 'training_provider', '*'];
 const opportunityCategories = [
   'Employment',
   'Internship',
@@ -91,6 +101,96 @@ const applicationDocumentTypes = new Set(['application/pdf', 'image/jpeg', 'imag
 const maxApplicationDocumentSize = 2 * 1024 * 1024;
 const maxApplicationDocumentsSize = 5 * 1024 * 1024;
 
+async function repairDemoRoleCredentials() {
+  for (const [role, credential] of Object.entries(demoRoleCredentials)) {
+    const user = users.find((entry) => entry.id === credential.userId);
+    if (!user || !user.roles.includes(role)) continue;
+
+    const passwordMatches = await bcrypt.compare(credential.password, user.passwordHash);
+    if (passwordMatches) continue;
+
+    user.passwordHash = await bcrypt.hash(credential.password, 10);
+    await persistRecord('users', user);
+    console.log(`Repaired the ${role} demonstration account password.`);
+  }
+}
+
+async function repairAssessorDemoRecords() {
+  const registeredLearner = users.find((user) => user.id === 'usr-learner');
+  if (registeredLearner && !registeredLearner.learnerNumber) {
+    registeredLearner.learnerNumber = 'AGR-LRN-001';
+    await persistRecord('users', registeredLearner);
+  }
+
+  const assessment = assessorAssignments.find((entry) => entry.id === 'assessment-demo-1');
+  if (!assessment) return;
+
+  const repaired = {
+    id: 'assessment-demo-1',
+    reference: 'AS-2026-001',
+    assessorId: 'usr-assessor',
+    learnerId: 'usr-learner',
+    learnerName: '',
+    learnerNumber: 'learner',
+    programme: 'Crop Production',
+    trainingProvider: 'Greenfields Agricultural Training Centre',
+    title: 'Crop production practical assessment',
+    assessmentType: 'Practical',
+    criteria: [
+      'Identify suitable agricultural soil',
+      'Demonstrate soil preparation techniques',
+      'Select suitable seeds',
+      'Demonstrate correct planting procedures',
+      'Apply appropriate irrigation techniques',
+      'Identify common crop pests and diseases',
+      'Follow agricultural health and safety procedures',
+    ],
+    requiredEvidence: ['Practical observation checklist', 'Photographic evidence', 'Learner practical demonstration', 'Assessor comments'],
+    assessmentLocation: 'Greenfields Training Farm, KwaZulu-Natal',
+    assessmentMethod: 'Practical observation',
+    startTime: '09:00',
+    endTime: '12:00',
+    scheduledAt: '2026-11-20T09:00:00.000Z',
+    dueAt: '2026-11-21T16:00:00.000Z',
+    status: 'Scheduled',
+    verificationRequired: true,
+    score: null,
+    areasForImprovement: '',
+    evidence: [],
+    result: null,
+    feedback: '',
+    report: '',
+    outcome: null,
+    submittedAt: null,
+    history: [],
+  };
+
+  Object.assign(assessment, repaired, { updatedAt: '2026-11-18T08:00:00.000Z' });
+  await persistRecord('assessorAssignments', assessment);
+}
+
+async function repairRoleServiceEligibility() {
+  const additions = {
+    'svc-smme': ['smme'],
+    'svc-market': ['smme'],
+    'svc-intel': ['smme', 'assessor'],
+    'svc-impact': ['smme', 'assessor'],
+  };
+
+  for (const [serviceId, roles] of Object.entries(additions)) {
+    const service = services.find((entry) => entry.id === serviceId);
+    if (!service) continue;
+
+    const eligibility = new Set(service.eligibility || []);
+    const previousSize = eligibility.size;
+    roles.forEach((role) => eligibility.add(role));
+    if (eligibility.size === previousSize) continue;
+
+    service.eligibility = [...eligibility];
+    await persistRecord('services', service);
+  }
+}
+
 // CLIENT_URL may hold one origin or a comma-separated list. In anything
 // other than production, common local Expo/web dev origins are allowed too
 // so local development isn't broken by whichever port Expo happens to pick.
@@ -109,13 +209,26 @@ const allowedOrigins = new Set([
   ...(process.env.NODE_ENV === 'production' ? [] : localDevOrigins),
 ]);
 
+function isLocalDevelopmentOrigin(origin) {
+  if (process.env.NODE_ENV === 'production') return false;
+
+  try {
+    const url = new URL(origin);
+    return url.origin === origin &&
+      url.protocol === 'http:' &&
+      ['localhost', '127.0.0.1'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 app.use(cors({
   credentials: true,
   origin(origin, callback) {
     // Non-browser clients (the mobile app, curl, server-to-server calls)
     // don't send an Origin header at all; only browsers enforce CORS, so
     // there is nothing to restrict for them.
-    if (!origin || allowedOrigins.has(origin)) {
+    if (!origin || allowedOrigins.has(origin) || isLocalDevelopmentOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error('This origin is not permitted to access the MyAgriSETA API.'));
@@ -164,6 +277,16 @@ function normalizeSouthAfricanPhone(value) {
   const phone = String(value || '').replace(/[\s()-]/g, '');
   const normalized = phone.startsWith('0') ? `+27${phone.slice(1)}` : phone;
   return /^\+27\d{9}$/.test(normalized) ? normalized : null;
+}
+
+function validatePassword(password) {
+  if (typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
+    return 'Password must be at least 12 characters and no more than 72 UTF-8 bytes.';
+  }
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+    return 'Password must include uppercase and lowercase letters, a number, and a symbol.';
+  }
+  return null;
 }
 
 function authenticate(req, res, next) {
@@ -989,9 +1112,8 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
   if (!/^[a-zA-Z0-9._-]{3,30}$/.test(username.trim())) {
     return res.status(400).json({ message: 'Username must be 3 to 30 letters, numbers, dots, underscores or hyphens.' });
   }
-  if (password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) {
-    return res.status(400).json({ message: 'Password must be at least 8 characters and no more than 72 UTF-8 bytes.' });
-  }
+  const passwordError = validatePassword(password);
+  if (passwordError) return res.status(400).json({ message: passwordError });
   if (!selfRegistrationRoles.includes(role)) {
     return res.status(400).json({ message: 'Choose an available public account role.' });
   }
@@ -1227,9 +1349,8 @@ app.post('/api/auth/password-reset/confirm', authRateLimit, async (req, res) => 
   if (!/^[a-f0-9]{64}$/.test(token)) {
     return res.status(400).json({ message: invalidLinkMessage });
   }
-  if (typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) {
-    return res.status(400).json({ message: 'Password must be at least 8 characters and no more than 72 UTF-8 bytes.' });
-  }
+  const passwordError = validatePassword(password);
+  if (passwordError) return res.status(400).json({ message: passwordError });
 
   const tokenHash = hashPasswordResetToken(token);
   const user = users.find((entry) => entry.passwordResetTokenHash === tokenHash);
@@ -1459,6 +1580,18 @@ app.get('/api/dashboard', authenticate, (req, res) => {
         { label: 'Open opportunities', value: openOpportunities.length },
       ],
     },
+    smme: {
+      title: 'SMME dashboard',
+      description: 'Manage your agricultural business and find support, funding, and market opportunities.',
+      servicesTitle: 'Business development services',
+      opportunitiesTitle: 'SMME opportunities',
+      applicationsTitle: 'My business applications',
+      metrics: [
+        { label: 'My applications', value: userApplications.length },
+        { label: 'Business services', value: eligibleServices.length },
+        { label: 'Open opportunities', value: openOpportunities.length },
+      ],
+    },
     sdf: {
       title: 'Skills development dashboard',
       description: 'Review skills development services relevant to your role.',
@@ -1483,6 +1616,18 @@ app.get('/api/dashboard', authenticate, (req, res) => {
         { label: 'Open opportunities', value: openOpportunities.length },
       ],
     },
+    assessor: {
+      title: 'Assessor dashboard',
+      description: 'Review assigned assessment work and maintain authorised competency records.',
+      servicesTitle: 'Assessment services',
+      opportunitiesTitle: 'Assigned assessment work',
+      applicationsTitle: 'Assessment records',
+      metrics: [
+        { label: 'Assigned assessments', value: 0 },
+        { label: 'Assessment services', value: eligibleServices.length },
+        { label: 'Completed assessments', value: 0 },
+      ],
+    },
   };
 
   if (isAdministrator) {
@@ -1494,7 +1639,7 @@ app.get('/api/dashboard', authenticate, (req, res) => {
         { label: 'User accounts', value: users.length },
         { label: 'Active accounts', value: users.filter((user) => user.status === 'active').length },
         { label: 'Inactive accounts', value: users.filter((user) => user.status !== 'active').length },
-        ...['learner', 'farmer', 'employer', 'sdf', 'training_provider'].map((assignedRole) => ({
+        ...['learner', 'farmer', 'employer', 'smme', 'sdf', 'training_provider', 'assessor'].map((assignedRole) => ({
           label: `${assignedRole.replace('_', ' ')} accounts`,
           value: users.filter((user) => user.roles.includes(assignedRole)).length,
         })),
@@ -1610,6 +1755,351 @@ app.get('/api/services/:id', authenticate, (req, res) => {
   }
 
   return res.json({ service: { ...service, requiredDocuments: service.requiredDocuments || [] } });
+});
+
+app.get('/api/smme/business-profile', authenticate, async (req, res) => {
+  if (req.activeRole !== 'smme') return res.status(403).json({ message: 'Only SMME accounts can access a business profile.' });
+  let profile = smmeBusinessProfiles.find((entry) => entry.userId === req.user.id);
+  if (!profile) {
+    profile = { id: `smme-profile-${req.user.id}`, userId: req.user.id, businessName: req.user.organization || '', registrationNumber: '', province: '', sector: '', description: '', documents: [], updatedAt: new Date().toISOString() };
+    smmeBusinessProfiles.push(profile);
+    await persistRecord('smmeBusinessProfiles', profile);
+  }
+  return res.json({ profile });
+});
+
+app.patch('/api/smme/business-profile', authenticate, async (req, res) => {
+  if (req.activeRole !== 'smme') return res.status(403).json({ message: 'Only SMME accounts can update a business profile.' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const profile = smmeBusinessProfiles.find((entry) => entry.userId === req.user.id) || { id: `smme-profile-${req.user.id}`, userId: req.user.id, documents: [] };
+  for (const field of ['businessName', 'registrationNumber', 'province', 'sector', 'description']) {
+    if (body[field] !== undefined && typeof body[field] !== 'string') return res.status(400).json({ message: `${field} must be text.` });
+    if (typeof body[field] === 'string') profile[field] = body[field].trim().slice(0, 1000);
+  }
+  if (!profile.businessName) return res.status(400).json({ message: 'Business name is required.' });
+  profile.updatedAt = new Date().toISOString();
+  await persistRecord('smmeBusinessProfiles', profile);
+  if (!smmeBusinessProfiles.includes(profile)) smmeBusinessProfiles.push(profile);
+  return res.json({ profile });
+});
+
+app.get('/api/smme/support-requests', authenticate, (req, res) => {
+  if (req.activeRole !== 'smme') return res.status(403).json({ message: 'Only SMME accounts can view these requests.' });
+  return res.json({ requests: smmeSupportRequests.filter((entry) => entry.userId === req.user.id) });
+});
+
+app.post('/api/smme/support-requests', authenticate, async (req, res) => {
+  if (req.activeRole !== 'smme') return res.status(403).json({ message: 'Only SMME accounts can submit support requests.' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+  const category = typeof body.category === 'string' ? body.category.trim().slice(0, 80) : '';
+  const details = typeof body.details === 'string' ? body.details.trim().slice(0, 2000) : '';
+  if (!title || !category || !details) return res.status(400).json({ message: 'Title, category, and details are required.' });
+  const request = { id: `smme-request-${randomUUID()}`, userId: req.user.id, title, category, details, status: 'Submitted', submittedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await persistRecord('smmeSupportRequests', request);
+  smmeSupportRequests.push(request);
+  await addUserNotification(req.user.id, 'SMME support request submitted', `${title} is now being tracked in your business workspace.`, { targetType: 'smme_support_request', targetId: request.id });
+  return res.status(201).json({ request });
+});
+
+function getAssessorAssignments(userId) {
+  return assessorAssignments.filter((entry) => entry.assessorId === userId);
+}
+
+function getAssessmentLearner(assignment) {
+  return users.find((user) => user.id === assignment.learnerId);
+}
+
+app.get('/api/assessor/dashboard', authenticate, requireRole('assessor'), (req, res) => {
+  const assignments = getAssessorAssignments(req.user.id);
+  const counts = {
+    totalAssignedAssessments: assignments.length,
+    assignedLearners: new Set(assignments.map((entry) => entry.learnerId)).size,
+    inProgressAssessments: assignments.filter((entry) => entry.status === 'In Progress').length,
+    submittedAssessments: assignments.filter((entry) => entry.status === 'Submitted').length,
+    pendingAssessments: assignments.filter((entry) => ['Assigned', 'Scheduled', 'In Progress', 'Draft', 'Changes Requested'].includes(entry.status)).length,
+    scheduledAssessments: assignments.filter((entry) => entry.status === 'Scheduled').length,
+    completedAssessments: assignments.filter((entry) => ['Submitted', 'Awaiting Verification', 'Verified', 'Finalised'].includes(entry.status)).length,
+    awaitingVerification: assignments.filter((entry) => entry.status === 'Awaiting Verification').length,
+    competentLearners: assignments.filter((entry) => entry.outcome === 'Competent').length,
+    notYetCompetentLearners: assignments.filter((entry) => entry.outcome === 'Not Yet Competent').length,
+  };
+  const recentActivities = assignments
+    .slice()
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 5)
+    .map((entry) => ({ id: entry.id, title: entry.title, status: entry.status, updatedAt: entry.updatedAt }));
+  const upcoming = assignments
+    .filter((entry) => entry.scheduledAt && Date.parse(entry.scheduledAt) >= Date.now())
+    .sort((left, right) => left.scheduledAt.localeCompare(right.scheduledAt))
+    .slice(0, 5)
+    .map((entry) => ({ id: entry.id, title: entry.title, scheduledAt: entry.scheduledAt, learnerId: entry.learnerId }));
+  return res.json({ counts, recentActivities, upcoming });
+});
+
+app.get('/api/assessor/profile', authenticate, requireRole('assessor'), (req, res) => {
+  const profile = assessorProfiles.find((entry) => entry.userId === req.user.id) || {
+    id: `assessor-profile-${req.user.id}`,
+    userId: req.user.id,
+    qualifications: [],
+    registrationReference: '',
+    accreditationStatus: 'pending',
+    supportingDocuments: [],
+  };
+  return res.json({
+    profile,
+    assessor: {
+      firstName: req.user.firstName,
+      lastName: req.user.lastName,
+      email: req.user.email,
+      organization: req.user.organization,
+    },
+  });
+});
+
+app.patch('/api/assessor/profile', authenticate, requireRole('assessor'), async (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const qualifications = Array.isArray(body.qualifications)
+    ? body.qualifications.filter((value) => typeof value === 'string').map((value) => value.trim().slice(0, 160)).filter(Boolean).slice(0, 20)
+    : null;
+  const registrationReference = typeof body.registrationReference === 'string' ? body.registrationReference.trim().slice(0, 120) : null;
+  if (!qualifications || registrationReference === null) {
+    return res.status(400).json({ message: 'Qualifications and registration reference are required.' });
+  }
+  let profile = assessorProfiles.find((entry) => entry.userId === req.user.id);
+  if (!profile) {
+    profile = { id: `assessor-profile-${req.user.id}`, userId: req.user.id, accreditationStatus: 'pending', supportingDocuments: [] };
+    assessorProfiles.push(profile);
+  }
+  Object.assign(profile, { qualifications, registrationReference, updatedAt: new Date().toISOString() });
+  await persistRecord('assessorProfiles', profile);
+  await persistRecord('auditLogs', { id: `audit-${randomUUID()}`, user: req.user.email, action: 'Updated assessor profile', timestamp: new Date().toISOString() });
+  return res.json({ profile });
+});
+
+app.get('/api/assessor/learners', authenticate, requireRole('assessor'), (req, res) => {
+  const assignments = getAssessorAssignments(req.user.id);
+  const learnerMap = new Map();
+
+  for (const entry of assignments) {
+    const learner = getAssessmentLearner(entry);
+    if (!learner || !learner.roles.includes('learner') || learner.status !== 'active') continue;
+
+    const learnerNumber = String(
+      learner.learnerNumber ||
+      learner.roleVerificationDetails?.learnerReference ||
+      learner.username ||
+      learner.id
+    );
+    if (learnerNumber === 'learner') {
+      // Keep learner-facing identifiers stable and human-readable.
+    }
+    const existing = learnerMap.get(learnerNumber);
+    const learnerAssignments = assignments.filter((item) => item.learnerId === learner.id);
+    const completed = learnerAssignments.filter((item) =>
+      ['Submitted', 'Awaiting Verification', 'Verified', 'Finalised'].includes(item.status)
+    ).length;
+
+    learnerMap.set(learnerNumber, {
+      id: learnerNumber,
+      learnerNumber,
+      name: `${learner.firstName} ${learner.lastName}`.trim(),
+      organization: learner.organization || entry.trainingProvider,
+      programme: entry.programme || 'Not specified',
+      trainingProvider: entry.trainingProvider || 'Not specified',
+      programmeStartDate: existing?.programmeStartDate || '2026-08-03',
+      programmeEndDate: existing?.programmeEndDate || '2026-12-11',
+      assignmentDate: entry.assignmentDate || '2026-11-01',
+      assessmentCount: learnerAssignments.length,
+      completedAssessments: completed,
+      pendingAssessments: learnerAssignments.length - completed,
+      latestOutcome: entry.outcome || 'Pending Assessment',
+      progress: learnerAssignments.length ? Math.round((completed / learnerAssignments.length) * 100) : 0,
+      previousResults: learnerAssignments.filter((item) => item.outcome).map((item) => ({
+        reference: item.reference,
+        outcome: item.outcome,
+        assessmentDate: item.scheduledAt,
+      })),
+    });
+  }
+
+  const learners = Array.from(learnerMap.values());
+  return res.json({ learners });
+});
+
+app.get('/api/assessor/criteria', authenticate, requireRole('assessor'), (req, res) => {
+  const criteria = [...new Map(getAssessorAssignments(req.user.id).map((entry) => [
+    `${entry.programme || entry.title}:${entry.assessmentType}`,
+    {
+      reference: `CR-${entry.reference}`,
+      programme: entry.programme || entry.title,
+      unitStandard: entry.programme === 'Crop Production' ? 'US 116213' : entry.programme === 'Animal Production' ? 'US 116216' : '',
+      assessmentType: entry.assessmentType,
+      criteria: entry.criteria,
+      requiredEvidence: entry.requiredEvidence || [],
+      assessmentMethod: entry.assessmentMethod,
+      scoringRules: entry.assessmentType === 'Theoretical' ? 'Programme-scoring rules apply; no universal pass mark is configured.' : 'Competency is recorded against the configured criteria.',
+      minimumRequirements: 'Complete all required criteria and attach required evidence.',
+    },
+  ])).values()];
+  return res.json({ criteria });
+});
+
+app.get('/api/assessor/assignments', authenticate, requireRole('assessor'), (req, res) => {
+  return res.json({ assignments: getAssessorAssignments(req.user.id) });
+});
+
+app.get('/api/learner/assessments', authenticate, requireRole('learner'), (req, res) => {
+  return res.json({
+    assessments: assessorAssignments
+      .filter((entry) => entry.learnerId === req.user.id && ['Submitted', 'Awaiting Verification', 'Verified', 'Finalised'].includes(entry.status))
+      .map(({ result, report, ...entry }) => ({
+        ...entry,
+        feedback: entry.feedbackStatus === 'Submitted' ? entry.feedback : '',
+        learnerStrengths: entry.feedbackStatus === 'Submitted' ? entry.learnerStrengths || '' : '',
+        areasForImprovement: entry.feedbackStatus === 'Submitted' ? entry.areasForImprovement || '' : '',
+        learningActivities: entry.feedbackStatus === 'Submitted' ? entry.learningActivities || '' : '',
+      })),
+  });
+});
+
+app.patch('/api/assessor/assignments/:id/feedback', authenticate, requireRole('assessor'), async (req, res) => {
+  const assignment = assessorAssignments.find((entry) => entry.id === req.params.id && entry.assessorId === req.user.id);
+  if (!assignment) return res.status(404).json({ message: 'Assessment assignment not found.' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const learnerStrengths = typeof body.learnerStrengths === 'string' ? body.learnerStrengths.trim().slice(0, 2000) : '';
+  const areasForImprovement = typeof body.areasForImprovement === 'string' ? body.areasForImprovement.trim().slice(0, 2000) : '';
+  const learningActivities = typeof body.learningActivities === 'string' ? body.learningActivities.trim().slice(0, 2000) : '';
+  const status = body.status === 'Draft' ? 'Draft' : 'Submitted';
+  if (status === 'Submitted' && (!learnerStrengths || !areasForImprovement || !learningActivities)) {
+    return res.status(400).json({ message: 'Strengths, areas for improvement, and learning activities are required.' });
+  }
+  assignment.learnerStrengths = learnerStrengths;
+  assignment.demonstratedSkills = typeof body.demonstratedSkills === 'string' ? body.demonstratedSkills.trim().slice(0, 2000) : assignment.demonstratedSkills || '';
+  assignment.areasForImprovement = areasForImprovement;
+  assignment.criteriaNotAchieved = typeof body.criteriaNotAchieved === 'string' ? body.criteriaNotAchieved.trim().slice(0, 2000) : assignment.criteriaNotAchieved || '';
+  assignment.learningActivities = learningActivities;
+  assignment.additionalTraining = typeof body.additionalTraining === 'string' ? body.additionalTraining.trim().slice(0, 2000) : assignment.additionalTraining || '';
+  assignment.reassessmentRecommendation = typeof body.reassessmentRecommendation === 'string' ? body.reassessmentRecommendation.trim().slice(0, 2000) : assignment.reassessmentRecommendation || '';
+  assignment.generalComments = typeof body.generalComments === 'string' ? body.generalComments.trim().slice(0, 2000) : assignment.generalComments || '';
+  assignment.feedbackStatus = status;
+  assignment.feedbackDate = status === 'Submitted' ? new Date().toISOString() : assignment.feedbackDate || null;
+  assignment.updatedAt = new Date().toISOString();
+  await persistRecord('assessorAssignments', assignment);
+  if (status === 'Submitted') {
+    await addUserNotification(assignment.learnerId, 'Assessment feedback available', `Feedback for ${assignment.reference} is now available.`, { targetType: 'assessment_feedback', targetId: assignment.id });
+  }
+  return res.json({ assignment });
+});
+
+app.patch('/api/assessor/assignments/:id', authenticate, requireRole('assessor'), async (req, res) => {
+  const assignment = assessorAssignments.find((entry) => entry.id === req.params.id && entry.assessorId === req.user.id);
+  if (!assignment) return res.status(404).json({ message: 'Assessment assignment not found.' });
+  if (['Verified', 'Finalised'].includes(assignment.status)) return res.status(409).json({ message: 'A verified assessment cannot be edited.' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const result = typeof body.result === 'string' ? body.result.trim().slice(0, 5000) : assignment.result || '';
+  const feedback = typeof body.feedback === 'string' ? body.feedback.trim().slice(0, 3000) : assignment.feedback || '';
+  const report = typeof body.report === 'string' ? body.report.trim().slice(0, 5000) : assignment.report || '';
+  const areasForImprovement = typeof body.areasForImprovement === 'string' ? body.areasForImprovement.trim().slice(0, 2000) : assignment.areasForImprovement || '';
+  const learnerStrengths = typeof body.learnerStrengths === 'string' ? body.learnerStrengths.trim().slice(0, 2000) : assignment.learnerStrengths || '';
+  const demonstratedSkills = typeof body.demonstratedSkills === 'string' ? body.demonstratedSkills.trim().slice(0, 2000) : assignment.demonstratedSkills || '';
+  const criteriaNotAchieved = typeof body.criteriaNotAchieved === 'string' ? body.criteriaNotAchieved.trim().slice(0, 2000) : assignment.criteriaNotAchieved || '';
+  const learningActivities = typeof body.learningActivities === 'string' ? body.learningActivities.trim().slice(0, 2000) : assignment.learningActivities || '';
+  const additionalTraining = typeof body.additionalTraining === 'string' ? body.additionalTraining.trim().slice(0, 2000) : assignment.additionalTraining || '';
+  const reassessmentRecommendation = typeof body.reassessmentRecommendation === 'string' ? body.reassessmentRecommendation.trim().slice(0, 2000) : assignment.reassessmentRecommendation || '';
+  const generalComments = typeof body.generalComments === 'string' ? body.generalComments.trim().slice(0, 2000) : assignment.generalComments || '';
+  const score = body.score === null || body.score === undefined || body.score === '' ? assignment.score : Number(body.score);
+  const outcome = typeof body.outcome === 'string' ? body.outcome.trim().replace('Not yet competent', 'Not Yet Competent') : assignment.outcome;
+  const requestedStatus = typeof body.status === 'string' ? body.status : '';
+  const allowedOutcomes = ['Competent', 'Not Yet Competent', 'Pending Assessment', 'Assessment Incomplete'];
+  const allowedStatuses = ['Draft', 'Scheduled', 'In Progress', 'Submitted', 'Assigned', 'Changes Requested'];
+  if (requestedStatus && !allowedStatuses.includes(requestedStatus)) {
+    return res.status(400).json({ message: 'The assessment status is not supported.' });
+  }
+  const nextStatus = requestedStatus === 'Submitted'
+    ? 'Awaiting Verification'
+    : requestedStatus === 'Draft'
+      ? 'Draft'
+      : requestedStatus === 'Scheduled'
+        ? 'Scheduled'
+        : requestedStatus === 'In Progress'
+          ? 'In Progress'
+          : requestedStatus === 'Changes Requested'
+            ? 'Changes Requested'
+            : requestedStatus === 'Assigned'
+              ? 'Assigned'
+              : (result && feedback && report && outcome ? 'Awaiting Verification' : assignment.status);
+  if (score !== null && (!Number.isFinite(score) || score < 0 || score > 100)) return res.status(400).json({ message: 'Score must be between 0 and 100.' });
+  if (outcome && !allowedOutcomes.includes(outcome)) return res.status(400).json({ message: 'The assessment outcome is not supported.' });
+  if (requestedStatus === 'Submitted' && (!result || !feedback || !report || !outcome)) {
+    return res.status(400).json({ message: 'Result, feedback, report, and outcome are required before submission.' });
+  }
+  if (body.evidence !== undefined) {
+    if (!Array.isArray(body.evidence)) return res.status(400).json({ message: 'Evidence must be a list.' });
+    const evidence = body.evidence.map((item) => ({
+      id: typeof item.id === 'string' ? item.id : `evidence-${randomUUID()}`,
+      name: typeof item.name === 'string' ? item.name.trim().slice(0, 160) : '',
+      description: typeof item.description === 'string' ? item.description.trim().slice(0, 500) : '',
+      contentType: typeof item.contentType === 'string' ? item.contentType : '',
+      size: Number(item.size || 0),
+    }));
+    if (evidence.some((item) => !item.name || !['application/pdf', 'image/jpeg', 'image/png'].includes(item.contentType) || item.size <= 0 || item.size > 5 * 1024 * 1024)) {
+      return res.status(400).json({ message: 'Evidence must be a PDF, JPEG, or PNG no larger than 5 MB.' });
+    }
+    assignment.evidence = evidence;
+  }
+  const previousStatus = assignment.status;
+  const statusChangedAt = new Date().toISOString();
+  Object.assign(assignment, {
+    result,
+    feedback,
+    report,
+    areasForImprovement,
+    learnerStrengths,
+    demonstratedSkills,
+    criteriaNotAchieved,
+    learningActivities,
+    additionalTraining,
+    reassessmentRecommendation,
+    generalComments,
+    score,
+    outcome: outcome || null,
+    status: nextStatus,
+    submittedAt: nextStatus === 'Awaiting Verification' ? statusChangedAt : assignment.submittedAt,
+    updatedAt: statusChangedAt,
+  });
+  assignment.history = Array.isArray(assignment.history) ? assignment.history : [];
+  assignment.history.push({
+    status: nextStatus,
+    previousStatus,
+    changedAt: statusChangedAt,
+    changedBy: req.user.email,
+  });
+  await persistRecord('assessorAssignments', assignment);
+  const audit = { id: `audit-${randomUUID()}`, user: req.user.email, action: `${nextStatus === 'Draft' ? 'Saved draft' : 'Submitted'} assessment ${assignment.id}`, timestamp: new Date().toISOString() };
+  auditLogs.push(audit);
+  await persistRecord('auditLogs', audit);
+  if (nextStatus !== 'Draft') await addUserNotification(assignment.learnerId, 'Assessment submitted', 'Your assessment is awaiting verification.', { targetType: 'assessment', targetId: assignment.id });
+  return res.json({ assignment });
+});
+
+app.get('/api/admin/assessment-verifications', authenticate, async (req, res) => {
+  if (!['administrator', 'internal_staff'].includes(req.activeRole)) return res.status(403).json({ message: 'Only authorised verification staff can view assessments.' });
+  return res.json({ assessments: assessorAssignments.filter((entry) => entry.status === 'Awaiting Verification') });
+});
+
+app.patch('/api/admin/assessment-verifications/:id', authenticate, async (req, res) => {
+  if (!['administrator', 'internal_staff'].includes(req.activeRole)) return res.status(403).json({ message: 'Only authorised verification staff can verify assessments.' });
+  const assignment = assessorAssignments.find((entry) => entry.id === req.params.id && entry.status === 'Awaiting Verification');
+  if (!assignment) return res.status(404).json({ message: 'Assessment awaiting verification not found.' });
+  const decision = req.body?.decision;
+  if (!['Verified', 'Changes Requested'].includes(decision)) return res.status(400).json({ message: 'Decision must be Verified or Changes Requested.' });
+  assignment.status = decision;
+  assignment.verification = { verifierId: req.user.id, verifierName: `${req.user.firstName} ${req.user.lastName}`, decision, notes: typeof req.body.notes === 'string' ? req.body.notes.trim().slice(0, 2000) : '', updatedAt: new Date().toISOString() };
+  assignment.updatedAt = assignment.verification.updatedAt;
+  await persistRecord('assessorAssignments', assignment);
+  await addUserNotification(assignment.assessorId, `Assessment ${decision.toLowerCase()}`, `Assessment ${assignment.id} was ${decision.toLowerCase()}.`, { targetType: 'assessment', targetId: assignment.id });
+  return res.json({ assignment });
 });
 
 app.get('/api/farmer/market', authenticate, (req, res) => {
@@ -6038,7 +6528,7 @@ app.use((error, req, res, next) => {
   if (error.message === 'This origin is not permitted to access the MyAgriSETA API.') {
     return res.status(403).json({ message: error.message });
   }
-  console.error(`API request failed (${error.name || 'Error'}).`);
+  console.error(`API request failed (${error.name || 'Error'}${error.code ? `/${error.code}` : ''}): ${error.message || 'Unknown error'}`);
   return res.status(500).json({ message: 'The request could not be completed.' });
 });
 
@@ -6074,7 +6564,15 @@ if (require.main === module) {
       applications,
       auditLogs,
       sdfWorkforceRecords,
+      smmeBusinessProfiles,
+      smmeSupportRequests,
+      assessorProfiles,
+      assessorAssignments,
     });
+
+    await repairDemoRoleCredentials();
+    await repairRoleServiceEligibility();
+    await repairAssessorDemoRecords();
 
     const persistedRevocations = await loadActiveRevokedTokenHashes();
     persistedRevocations.forEach((hash) => revokedTokens.add(hash));

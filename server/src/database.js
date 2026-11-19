@@ -31,6 +31,10 @@ const tables = {
   applications: { name: 'applications', key: (record) => record.id },
   auditLogs: { name: 'audit_logs', key: (record) => record.id },
   sdfWorkforceRecords: { name: 'sdf_workforce_records', key: (record) => record.id },
+  smmeBusinessProfiles: { name: 'smme_business_profiles', key: (record) => record.id },
+  smmeSupportRequests: { name: 'smme_support_requests', key: (record) => record.id },
+  assessorProfiles: { name: 'assessor_profiles', key: (record) => record.id },
+  assessorAssignments: { name: 'assessor_assignments', key: (record) => record.id },
 };
 
 let pool;

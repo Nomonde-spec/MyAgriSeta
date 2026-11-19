@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import { router } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LearnerSidebar } from '@/components/navigation/learner-sidebar';
@@ -374,15 +375,35 @@ function LearnerDashboard({
           role={role}
           onDashboard={() => router.replace('/home')}
           onCourses={() => router.push({ pathname: '/learning', params: { section: 'My learning' } })}
+          onOpportunities={() => router.push('/opportunities')}
+          onPassport={() => router.push('/passport')}
+          onNotifications={() => router.push('/notifications')}
+          onProfile={() => router.push('/profile')}
         />
         <View style={learnerDashboardStyles.main}>
           <View style={learnerDashboardStyles.topbar}>
-            <Text style={learnerDashboardStyles.topbarLabel}>Dashboard</Text>
+          <View style={learnerDashboardStyles.topbarSearch}>
+            <Ionicons name="search-outline" size={16} color={palette.muted} />
+            <Text style={learnerDashboardStyles.topbarSearchText}>Search courses, programmes and resources...</Text>
+          </View>
+          <View style={learnerDashboardStyles.topbarRight}>
             <NotificationBell onPress={() => router.push('/notifications')} color={palette.text} />
+            <Pressable accessibilityRole="button" onPress={() => router.push('/profile')} style={learnerDashboardStyles.topbarProfile}>
+              <View style={learnerDashboardStyles.topbarAvatar}><Text style={learnerDashboardStyles.topbarAvatarText}>{firstName.slice(0, 1).toUpperCase()}</Text></View>
+              <Text style={learnerDashboardStyles.topbarName}>{firstName} {lastName}</Text>
+            </Pressable>
+          </View>
           </View>
           <ScrollView contentContainerStyle={learnerDashboardStyles.content} showsVerticalScrollIndicator>
-            <Text style={learnerDashboardStyles.heading}>Welcome back, {firstName}!</Text>
-            <Text style={learnerDashboardStyles.subheading}>Continue your learning journey</Text>
+          <View style={learnerDashboardStyles.welcomeBanner}>
+            <Image source={require('@/assets/images/farm-hero-farmer.jpg')} contentFit="cover" style={StyleSheet.absoluteFill} />
+            <View style={learnerDashboardStyles.welcomeShade} />
+            <View style={learnerDashboardStyles.welcomeCopy}>
+              <Text style={learnerDashboardStyles.welcomeEyebrow}>AGRILEARN · LEARNER DASHBOARD</Text>
+              <Text style={learnerDashboardStyles.heading}>Welcome back, {firstName}!</Text>
+              <Text style={learnerDashboardStyles.subheading}>Keep learning. Grow your skills. Build your future in agriculture.</Text>
+            </View>
+          </View>
             {error ? (
               <View accessibilityRole="alert" style={learnerDashboardStyles.errorCard}>
                 <Text style={learnerDashboardStyles.errorText}>{error}</Text>
@@ -397,6 +418,24 @@ function LearnerDashboard({
                   <LearnerMetric icon="ribbon-outline" label="Certificates" value={certificateCount} />
                   <LearnerMetric icon="reader-outline" label="Guides started" value={startedGuides.length} />
                 </View>
+                <View style={learnerDashboardStyles.referencePanels}>
+                  <DashboardPanel icon="book-outline" title="Continue Learning" action="View all" onPress={() => router.push({ pathname: '/learning', params: { section: 'My learning' } })}>
+                    <Text style={learnerDashboardStyles.panelTitle}>{featuredEnrollment?.course?.title ?? 'Explore agricultural courses'}</Text>
+                    <Text style={learnerDashboardStyles.meta}>{featuredEnrollment ? `${progressByEnrollment.get(featuredEnrollment.id)?.progressPercent ?? 0}% complete` : 'Find a course to begin learning.'}</Text>
+                  </DashboardPanel>
+                  <DashboardPanel icon="sparkles-outline" title="Recommended for You" action="View all" onPress={() => router.push('/learning')}>
+                    <Text style={learnerDashboardStyles.panelTitle}>Agricultural learning pathways</Text>
+                    <Text style={learnerDashboardStyles.meta}>Courses and resources matched to your learning journey.</Text>
+                  </DashboardPanel>
+                  <DashboardPanel icon="people-outline" title="Providers" action="Browse" onPress={() => router.push({ pathname: '/learning', params: { section: 'Providers' } })}>
+                    <Text style={learnerDashboardStyles.panelTitle}>Find training providers</Text>
+                    <Text style={learnerDashboardStyles.meta}>Discover organisations offering agricultural training.</Text>
+                  </DashboardPanel>
+                  <DashboardPanel icon="document-text-outline" title="Resources" action="Browse" onPress={() => router.push({ pathname: '/learning', params: { section: 'Resources' } })}>
+                    <Text style={learnerDashboardStyles.panelTitle}>{startedGuides[0]?.title ?? 'Agricultural learning guides'}</Text>
+                    <Text style={learnerDashboardStyles.meta}>{startedGuides.length ? 'Continue your started materials.' : 'Browse published learning materials.'}</Text>
+                  </DashboardPanel>
+                </View>
                 <PassportSummaryCard />
                 <View style={learnerDashboardStyles.columns}>
                   <View style={learnerDashboardStyles.primaryColumn}>
@@ -407,7 +446,7 @@ function LearnerDashboard({
                         style={learnerDashboardStyles.featuredCourse}
                       >
                         <Text style={learnerDashboardStyles.featuredEyebrow}>
-                          {featuredEnrollment.status === 'Enrolled (demo)' ? 'CONTINUE LEARNING · DEMO' : 'COURSE REQUEST'}
+                          {featuredEnrollment.status === 'Enrolled (demo)' ? 'CONTINUE LEARNING · SAMPLE' : 'COURSE REQUEST'}
                         </Text>
                         <Text style={learnerDashboardStyles.courseName}>{featuredEnrollment.course?.title ?? 'Learning course'}</Text>
                         <Text style={learnerDashboardStyles.courseProvider}>
@@ -537,6 +576,33 @@ function PassportSummaryCard() {
   );
 }
 
+function DashboardPanel({
+  icon,
+  title,
+  action,
+  onPress,
+  children,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  action: string;
+  onPress: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={learnerDashboardStyles.panel}>
+      <View style={learnerDashboardStyles.panelHeader}>
+        <View style={learnerDashboardStyles.panelHeading}>
+          <Ionicons name={icon} size={16} color={palette.primary} />
+          <Text style={learnerDashboardStyles.cardHeading}>{title}</Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={onPress}><Text style={learnerDashboardStyles.panelAction}>{action}</Text></Pressable>
+      </View>
+      {children}
+    </View>
+  );
+}
+
 function LearnerMetric({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number }) {
   return (
     <View style={learnerDashboardStyles.metricCard}>
@@ -553,9 +619,20 @@ const learnerDashboardStyles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F7F9FC' },
   shell: { flex: 1, flexDirection: 'row' },
   main: { flex: 1, minWidth: 0 },
-  topbar: { height: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E8ECEF', paddingHorizontal: 20 },
+  topbar: { height: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#E8ECEF', paddingHorizontal: 20, gap: 18 },
+  topbarSearch: { flex: 1, maxWidth: 520, minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F4F7F5', borderRadius: 18, paddingHorizontal: 14 },
+  topbarSearchText: { color: '#8A958F', fontSize: 11 },
+  topbarRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  topbarProfile: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  topbarAvatar: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#E3F1E6' },
+  topbarAvatarText: { color: palette.primaryDark, fontSize: 12, fontWeight: '800' },
+  topbarName: { color: '#1C2A22', fontSize: 11, fontWeight: '700' },
   topbarLabel: { color: '#39443E', fontSize: 11 },
-  content: { width: '100%', maxWidth: 1160, alignSelf: 'center', paddingHorizontal: 28, paddingTop: 26, paddingBottom: 40 },
+  content: { width: '100%', maxWidth: 1160, alignSelf: 'center', paddingHorizontal: 28, paddingTop: 24, paddingBottom: 40 },
+  welcomeBanner: { minHeight: 180, overflow: 'hidden', justifyContent: 'flex-end', borderRadius: 10, backgroundColor: '#0B3B20' },
+  welcomeShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(5, 48, 25, 0.6)' },
+  welcomeCopy: { padding: 24 },
+  welcomeEyebrow: { color: '#D9B95B', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   heading: { color: '#14201B', fontSize: 24, lineHeight: 31, fontWeight: '800' },
   subheading: { color: palette.muted, fontSize: 14, marginTop: 4 },
   loader: { marginTop: 42 },
@@ -566,6 +643,12 @@ const learnerDashboardStyles = StyleSheet.create({
   metricTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   metricLabel: { color: palette.muted, fontSize: 10, textTransform: 'uppercase' },
   metricValue: { color: '#101714', fontSize: 21, fontWeight: '800', marginTop: 5 },
+  referencePanels: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 20 },
+  panel: { flex: 1, minWidth: 210, minHeight: 128, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E1E5E8', borderRadius: 8, padding: 14 },
+  panelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12 },
+  panelHeading: { flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 },
+  panelAction: { color: palette.primary, fontSize: 10, fontWeight: '800' },
+  panelTitle: { color: '#18211D', fontSize: 12, fontWeight: '800', lineHeight: 17 },
   columns: { flexDirection: 'row', alignItems: 'flex-start', gap: 20, marginTop: 26 },
   primaryColumn: { flex: 1, minWidth: 0, gap: 14 },
   featuredCourse: { backgroundColor: '#FFFFFF', borderLeftWidth: 2, borderLeftColor: palette.primary, borderTopWidth: 1, borderRightWidth: 1, borderBottomWidth: 1, borderTopColor: '#E1E5E8', borderRightColor: '#E1E5E8', borderBottomColor: '#E1E5E8', padding: 18 },
@@ -637,6 +720,14 @@ function getQuickActions(role: string): QuickAction[] {
       { label: 'Funding support', icon: 'wallet-outline', tone: 'coral', onPress: employerWorkspace('funding') },
       { label: 'Application updates', icon: 'notifications-outline', tone: 'green', onPress: notifications },
     ],
+    smme: [
+      { label: 'Business profile & support', icon: 'business-outline', tone: 'green', onPress: () => router.push('/role-workspace') },
+      { label: 'Business opportunities', icon: 'briefcase-outline', tone: 'gold', onPress: opportunities },
+      { label: 'Funding & grants', icon: 'wallet-outline', tone: 'blue', onPress: farmerFunding },
+      { label: 'Business training', icon: 'school-outline', tone: 'coral', onPress: () => router.push('/learning') },
+      { label: 'My applications', icon: 'document-text-outline', tone: 'green', onPress: applications },
+      { label: 'Notifications', icon: 'notifications-outline', tone: 'gold', onPress: notifications },
+    ],
     sdf: [
       { label: 'Workforce planning', icon: 'people-outline', tone: 'green', onPress: () => router.push({ pathname: '/sdf-workforce', params: { section: 'wsp' } }) },
       { label: 'Programme submissions', icon: 'document-text-outline', tone: 'gold', onPress: opportunities },
@@ -649,6 +740,12 @@ function getQuickActions(role: string): QuickAction[] {
       { label: 'Programme submissions', icon: 'school-outline', tone: 'gold', onPress: providerWorkspace('submissions') },
       { label: 'Review outcomes', icon: 'checkmark-done-outline', tone: 'blue', onPress: providerWorkspace('outcomes') },
       { label: 'Programme notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
+    ],
+    assessor: [
+      { label: 'Assigned assessments', icon: 'clipboard-outline', tone: 'green', onPress: () => router.push('/role-workspace') },
+      { label: 'Assessment criteria & evidence', icon: 'list-outline', tone: 'gold', onPress: () => router.push('/role-workspace') },
+      { label: 'Assessment reports', icon: 'document-text-outline', tone: 'blue', onPress: () => router.push('/role-workspace') },
+      { label: 'Notifications', icon: 'notifications-outline', tone: 'coral', onPress: notifications },
     ],
     administrator: [
       { label: 'Accounts & status', icon: 'people-outline', tone: 'green', onPress: admin('accounts') },

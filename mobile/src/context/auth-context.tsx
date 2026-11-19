@@ -5,12 +5,14 @@ export type AppRole =
   | 'learner'
   | 'farmer'
   | 'employer'
+  | 'smme'
   | 'sdf'
   | 'training_provider'
+  | 'assessor'
   | 'administrator'
   | 'internal_staff';
 
-export type SelfRegistrationRole = Exclude<AppRole, 'administrator' | 'internal_staff'>;
+export type SelfRegistrationRole = Exclude<AppRole, 'administrator' | 'internal_staff' | 'smme' | 'assessor'>;
 
 type RegistrationDetails = {
   firstName: string;

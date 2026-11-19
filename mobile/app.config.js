@@ -1,5 +1,21 @@
 const { withAndroidManifest } = require('@expo/config-plugins');
 
+const defaultApiUrl = 'http://localhost:3000/api';
+const productionApiUrl = 'https://myagriseta.onrender.com/api';
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+
+function getApiUrl() {
+  const configuredUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (process.env.NODE_ENV !== 'production') return configuredUrl || defaultApiUrl;
+  if (!configuredUrl) return productionApiUrl;
+
+  try {
+    return loopbackHosts.has(new URL(configuredUrl).hostname) ? productionApiUrl : configuredUrl;
+  } catch {
+    return productionApiUrl;
+  }
+}
+
 function allowsPrivateNetworkHttp(apiUrl) {
   try {
     const url = new URL(apiUrl);
@@ -20,7 +36,7 @@ function allowsPrivateNetworkHttp(apiUrl) {
 }
 
 module.exports = ({ config }) => {
-  const allowPrivateNetworkHttp = allowsPrivateNetworkHttp(process.env.EXPO_PUBLIC_API_URL || '');
+  const allowPrivateNetworkHttp = allowsPrivateNetworkHttp(getApiUrl());
   const configWithNetworkPolicy = {
     ...config,
     android: {

@@ -31,6 +31,7 @@ export default function RootLayout() {
               <Stack.Screen name="forgot-password" />
               <Stack.Screen name="reset-password" />
               <Stack.Screen name="applications" />
+              <Stack.Screen name="role-workspace" />
               <Stack.Screen name="farmer-market" />
               <Stack.Screen name="farmer-mentors" />
               <Stack.Screen name="opportunity" />

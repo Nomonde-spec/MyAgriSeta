@@ -5,11 +5,55 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, Text
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/context/auth-context';
+import { FilterDropdown } from '@/components/filter-dropdown';
 import { apiFetch } from '@/lib/api';
 import { palette, radius, spacing } from '@/theme';
 
 type Service = {
   id: string;
+};
+
+type AssessorSummary = {
+  counts: {
+    totalAssignedAssessments?: number;
+    assignedLearners: number;
+    pendingAssessments: number;
+    scheduledAssessments: number;
+    inProgressAssessments?: number;
+    submittedAssessments?: number;
+    completedAssessments: number;
+    awaitingVerification: number;
+    competentLearners: number;
+    notYetCompetentLearners: number;
+  };
+  recentActivities: { id: string; title: string; status: string; updatedAt: string }[];
+  upcoming: { id: string; title: string; scheduledAt: string; learnerId: string }[];
+};
+type AssessorAssignment = {
+  id: string;
+  reference?: string;
+  learnerName?: string;
+  programme?: string;
+  assessmentType: string;
+  status: string;
+  outcome?: string | null;
+  feedbackStatus?: 'Draft' | 'Submitted';
+  learnerNumber?: string;
+};
+type AssessorLearner = {
+  id: string;
+  learnerNumber: string;
+  name: string;
+  programme: string;
+  assessmentCount: number;
+  completedAssessments: number;
+  pendingAssessments: number;
+};
+type AssessorCriteria = {
+  reference?: string;
+  programme: string;
+  assessmentType: string;
+  criteria: string[];
 };
 
 type DirectoryService = {
@@ -40,6 +84,7 @@ type DirectoryService = {
     | { type: 'admin'; section?: 'accounts' | 'roles' | 'announcements' | 'agricultural-information' | 'permissions' }
     | { type: 'review' }
     | { type: 'audit'; section?: 'reports' | 'activity' }
+    | { type: 'assessor-workspace'; section: 'assessments' | 'learners' | 'schedule' | 'criteria' | 'results' | 'feedback' | 'reports' | 'history' }
     | { type: 'notice'; title: string; message: string };
 };
 
@@ -51,6 +96,8 @@ const farmerServiceFilters = ['All services', 'Advice & resources', 'Skills & re
 const employerServiceFilters = ['All services', 'Employer profile', 'Jobs & placements', 'Recruitment', 'Funding & support', 'Updates'] as const;
 const providerServiceFilters = ['All services', 'Provider profile', 'Programmes', 'Supporting documents', 'Funding & support', 'Updates'] as const;
 const adminServiceFilters = ['All services', 'Accounts & roles', 'Opportunity review', 'Learning', 'Platform content', 'Reports & security'] as const;
+const smmeServiceFilters = ['All services', 'Business support', 'Funding & support', 'Markets', 'Updates'] as const;
+const assessorServiceFilters = ['All services', 'Assessments', 'Evidence & records', 'Resources', 'Updates'] as const;
 type ServiceFilter =
   | typeof serviceFilters[number]
   | typeof learnerServiceFilters[number]
@@ -59,7 +106,9 @@ type ServiceFilter =
   | typeof farmerServiceFilters[number]
   | typeof employerServiceFilters[number]
   | typeof providerServiceFilters[number]
-  | typeof adminServiceFilters[number];
+  | typeof adminServiceFilters[number]
+  | typeof smmeServiceFilters[number]
+  | typeof assessorServiceFilters[number];
 
 const staffDirectoryServices: DirectoryService[] = [
   {
@@ -276,7 +325,7 @@ const directoryServices: DirectoryService[] = [
     color: '#347A5A',
     background: '#E2F2E9',
     sourceId: 'svc-learn',
-    status: 'Demo listings · accreditation not verified',
+    status: 'Sample listings · accreditation not verified',
     searchTerms: 'courses training accredited',
     destination: { type: 'learning' },
   },
@@ -328,7 +377,7 @@ const directoryServices: DirectoryService[] = [
     color: '#8065A7',
     background: '#EEE8F6',
     sourceId: 'svc-provider',
-    status: 'Demo records · providers are not verified',
+    status: 'Sample records · providers are not verified',
     searchTerms: 'provider directory accredited training',
     destination: { type: 'learning', section: 'Providers' },
   },
@@ -761,6 +810,142 @@ const providerDirectoryServices: DirectoryService[] = [
   },
 ];
 
+const smmeDirectoryServices: DirectoryService[] = [
+  {
+    id: 'smme-business-support',
+    title: 'AgriSMME Business Support',
+    description: 'Explore business-development information and support pathways for agricultural small businesses.',
+    category: 'Business support',
+    icon: 'business-outline',
+    color: '#347A5A',
+    background: '#E2F2E9',
+    sourceId: 'svc-smme',
+    status: 'Prototype information · external support is not connected',
+    searchTerms: 'business development small enterprise support',
+    destination: { type: 'service', id: 'svc-smme' },
+  },
+  {
+    id: 'smme-market-access',
+    title: 'Market Access Planning',
+    description: 'Use in-app guidance to compare market opportunities and plan buyer conversations.',
+    category: 'Markets',
+    icon: 'storefront-outline',
+    color: '#A47A20',
+    background: '#FBF1D8',
+    sourceId: 'svc-market',
+    status: 'In-app guidance · no live buyer listings',
+    searchTerms: 'market access buyers pricing business planning',
+    destination: { type: 'service', id: 'svc-market' },
+  },
+];
+
+const assessorDirectoryServices: DirectoryService[] = [
+  {
+    id: 'assessor-assigned-assessments',
+    title: 'My Assigned Assessments',
+    description: 'Open assessments assigned to you and manage their current status.',
+    category: 'Assessments',
+    icon: 'clipboard-outline',
+    color: '#347A5A',
+    background: '#E2F2E9',
+    sourceId: 'assessor-assigned-assessments',
+    status: 'Server-backed assessment assignments',
+    searchTerms: 'my assigned assessments assessor',
+    destination: { type: 'assessor-workspace', section: 'assessments' },
+  },
+  {
+    id: 'assessor-learners',
+    title: 'Assigned Learners',
+    description: 'View only learners linked to assessments assigned to you.',
+    category: 'Assessments',
+    icon: 'people-outline',
+    color: '#4385A8',
+    background: '#E3F0F7',
+    sourceId: 'assessor-learners',
+    status: 'Learner access is restricted to authorised assignments',
+    searchTerms: 'assigned learners learner number programme provider',
+    destination: { type: 'assessor-workspace', section: 'learners' },
+  },
+  {
+    id: 'assessor-schedule',
+    title: 'Assessment Schedule',
+    description: 'View assessment dates and upcoming assigned sessions.',
+    category: 'Assessments',
+    icon: 'calendar-outline',
+    color: '#9A6B18',
+    background: '#F6ECD5',
+    sourceId: 'assessor-schedule',
+    status: 'Schedule records from assigned assessments',
+    searchTerms: 'assessment schedule dates upcoming',
+    destination: { type: 'assessor-workspace', section: 'schedule' },
+  },
+  {
+    id: 'assessor-criteria',
+    title: 'Assessment Criteria',
+    description: 'Review assessment criteria configured for your assigned programmes.',
+    category: 'Evidence & records',
+    icon: 'list-outline',
+    color: '#8065A7',
+    background: '#EEE8F6',
+    sourceId: 'assessor-criteria',
+    status: 'Programme-specific criteria',
+    searchTerms: 'assessment criteria programme requirements',
+    destination: { type: 'assessor-workspace', section: 'criteria' },
+  },
+  {
+    id: 'assessor-results',
+    title: 'Record Assessment Results',
+    description: 'Record scores, outcomes, supporting evidence, and areas for improvement.',
+    category: 'Assessments',
+    icon: 'create-outline',
+    color: '#347A5A',
+    background: '#E2F2E9',
+    sourceId: 'assessor-results',
+    status: 'Draft and submit assigned assessment results',
+    searchTerms: 'record results score outcome evidence',
+    destination: { type: 'assessor-workspace', section: 'results' },
+  },
+  {
+    id: 'assessor-feedback',
+    title: 'Learner Feedback',
+    description: 'Provide strengths, improvement areas, and reassessment recommendations.',
+    category: 'Evidence & records',
+    icon: 'chatbubbles-outline',
+    color: '#4385A8',
+    background: '#E3F0F7',
+    sourceId: 'assessor-feedback',
+    status: 'Feedback is visible to the relevant learner',
+    searchTerms: 'learner feedback strengths improvement reassessment',
+    destination: { type: 'assessor-workspace', section: 'feedback' },
+  },
+  {
+    id: 'assessor-reports',
+    title: 'Assessment Reports',
+    description: 'View completed reports and outcomes for your authorised assessments.',
+    category: 'Evidence & records',
+    icon: 'document-text-outline',
+    color: '#8065A7',
+    background: '#EEE8F6',
+    sourceId: 'assessor-reports',
+    status: 'Completed assessment reports',
+    searchTerms: 'assessment reports completed outcomes',
+    destination: { type: 'assessor-workspace', section: 'reports' },
+  },
+  {
+    id: 'assessor-history',
+    title: 'Assessment History',
+    description: 'Review assessment status changes and submitted assessment history.',
+    category: 'Evidence & records',
+    icon: 'time-outline',
+    color: '#9A6B18',
+    background: '#F6ECD5',
+    sourceId: 'assessor-history',
+    status: 'Submitted and historical assessment records',
+    searchTerms: 'assessment history status submitted verified',
+    destination: { type: 'assessor-workspace', section: 'history' },
+  },
+];
+
 const adminDirectoryServices: DirectoryService[] = [
   {
     id: 'admin-accounts',
@@ -910,6 +1095,10 @@ const adminDirectoryServices: DirectoryService[] = [
 export default function ServicesScreen() {
   const { session } = useAuth();
   const [services, setServices] = useState<Service[]>([]);
+  const [assessorSummary, setAssessorSummary] = useState<AssessorSummary | null>(null);
+  const [assessorAssignments, setAssessorAssignments] = useState<AssessorAssignment[]>([]);
+  const [assessorLearners, setAssessorLearners] = useState<AssessorLearner[]>([]);
+  const [assessorCriteria, setAssessorCriteria] = useState<AssessorCriteria[]>([]);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<ServiceFilter>('All services');
   const [loading, setLoading] = useState(true);
@@ -922,14 +1111,36 @@ export default function ServicesScreen() {
   const isEmployer = session?.activeRole === 'employer';
   const isProvider = session?.activeRole === 'training_provider';
   const isAdministrator = session?.activeRole === 'administrator';
+  const isSmme = session?.activeRole === 'smme';
+  const isAssessor = session?.activeRole === 'assessor';
 
   useEffect(() => {
     let isCurrent = true;
 
+    if (session?.activeRole === 'assessor') {
+      setLoading(false);
+      Promise.allSettled([
+        apiFetch<AssessorSummary>('/assessor/dashboard'),
+        apiFetch<{ assignments: AssessorAssignment[] }>('/assessor/assignments'),
+        apiFetch<{ learners: AssessorLearner[] }>('/assessor/learners'),
+        apiFetch<{ criteria: AssessorCriteria[] }>('/assessor/criteria'),
+      ]).then((results) => {
+        if (!isCurrent) return;
+        const [summary, assignments, learners, criteria] = results;
+        if (summary.status === 'fulfilled') setAssessorSummary(summary.value);
+        if (assignments.status === 'fulfilled') setAssessorAssignments(assignments.value.assignments);
+        if (learners.status === 'fulfilled') setAssessorLearners(learners.value.learners);
+        if (criteria.status === 'fulfilled') setAssessorCriteria(criteria.value.criteria);
+        setErrorMessage('');
+        setLoading(false);
+      });
+    }
+
     if (session?.activeRole === 'learner' || session?.activeRole === 'internal_staff' ||
         session?.activeRole === 'sdf' || session?.activeRole === 'farmer' ||
         session?.activeRole === 'employer' || session?.activeRole === 'training_provider' ||
-        session?.activeRole === 'administrator') {
+        session?.activeRole === 'administrator' || session?.activeRole === 'smme' ||
+        session?.activeRole === 'assessor') {
       return () => {
         isCurrent = false;
       };
@@ -977,9 +1188,13 @@ export default function ServicesScreen() {
                   ? providerDirectoryServices
                   : role === 'administrator'
                     ? adminDirectoryServices
+                    : role === 'smme'
+                      ? smmeDirectoryServices
+                      : role === 'assessor'
+                        ? assessorDirectoryServices
                     : directoryServices;
       const curatedServices = role === 'learner' || role === 'internal_staff' || role === 'sdf' || role === 'farmer' || role === 'employer' ||
-        role === 'training_provider' || role === 'administrator';
+        role === 'training_provider' || role === 'administrator' || role === 'smme' || role === 'assessor';
       const availableServices = roleServices;
       return availableServices.filter((service) => {
         const roleCanAccess = curatedServices || availableIds.has(service.sourceId);
@@ -1005,9 +1220,41 @@ export default function ServicesScreen() {
               ? providerServiceFilters
               : isAdministrator
                 ? adminServiceFilters
+                : isSmme
+                  ? smmeServiceFilters
+                  : isAssessor
+                    ? assessorServiceFilters
                 : serviceFilters;
 
-  if (loading && !isLearner && !isInternalStaff && !isSdf && !isFarmer && !isEmployer && !isProvider && !isAdministrator) {
+  const getAssessorCardPreview = (serviceId: string) => {
+    if (!isAssessor) return null;
+    const scheduled = assessorAssignments.filter((item) => item.status === 'Scheduled');
+    const submitted = assessorAssignments.filter((item) => item.status === 'Submitted' || item.status === 'Awaiting Verification');
+    const reports = assessorAssignments.filter((item) => item.status === 'Awaiting Verification' || item.status === 'Verified' || item.status === 'Finalised');
+
+    switch (serviceId) {
+      case 'assessor-assigned-assessments':
+        return `${assessorAssignments.length} assigned · ${assessorSummary?.counts.pendingAssessments || 0} pending`;
+      case 'assessor-learners':
+        return `${assessorLearners.length} learners · ${assessorLearners.reduce((total, learner) => total + learner.completedAssessments, 0)} completed`;
+      case 'assessor-schedule':
+        return `${scheduled.length} scheduled · ${assessorSummary?.counts.awaitingVerification || 0} awaiting verification`;
+      case 'assessor-criteria':
+        return `${assessorCriteria.length} programmes · ${assessorCriteria.reduce((total, item) => total + item.criteria.length, 0)} criteria`;
+      case 'assessor-results':
+        return `${assessorAssignments.filter((item) => !['Verified', 'Finalised', 'Awaiting Verification'].includes(item.status)).length} ready to record · ${submitted.length} submitted`;
+      case 'assessor-feedback':
+        return `${assessorAssignments.filter((item) => item.feedbackStatus === 'Submitted').length || submitted.length} feedback records`;
+      case 'assessor-reports':
+        return `${reports.length} reports · ${assessorSummary?.counts.competentLearners || 0} competent`;
+      case 'assessor-history':
+        return `${assessorAssignments.length} traceable records · ${assessorSummary?.counts.notYetCompetentLearners || 0} not yet competent`;
+      default:
+        return null;
+    }
+  };
+
+  if (loading && !isLearner && !isInternalStaff && !isSdf && !isFarmer && !isEmployer && !isProvider && !isAdministrator && !isSmme && !isAssessor) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.center}>
@@ -1022,7 +1269,7 @@ export default function ServicesScreen() {
       <View style={styles.container}>
         <View style={styles.headingBlock}>
           <Text style={styles.eyebrow}>
-            {isLearner ? 'LEARNER SERVICES' : isInternalStaff ? 'INTERNAL STAFF' : isSdf ? 'SDF WORKSPACE' : isFarmer ? 'FARMER SERVICES' : isEmployer ? 'EMPLOYER SERVICES' : isProvider ? 'TRAINING PROVIDER' : isAdministrator ? 'ADMINISTRATION' : 'AGRICONNECT 360'}
+            {isLearner ? 'LEARNER SERVICES' : isInternalStaff ? 'INTERNAL STAFF' : isSdf ? 'SDF WORKSPACE' : isFarmer ? 'FARMER SERVICES' : isEmployer ? 'EMPLOYER SERVICES' : isProvider ? 'TRAINING PROVIDER' : isAdministrator ? 'ADMINISTRATION' : isSmme ? 'SMME SERVICES' : isAssessor ? 'ASSESSOR SERVICES' : 'AGRICONNECT 360'}
           </Text>
           <Text style={styles.heading}>
             {isLearner
@@ -1039,6 +1286,10 @@ export default function ServicesScreen() {
                           ? 'Training provider services'
                           : isAdministrator
                             ? 'Administrator services'
+                            : isSmme
+                              ? 'Business development services'
+                              : isAssessor
+                                ? 'Assessment services'
                             : 'Explore services'}
           </Text>
           <Text style={styles.subheading}>
@@ -1056,6 +1307,10 @@ export default function ServicesScreen() {
                         ? 'Manage your provider profile, programme submissions, supporting documents, and approvals.'
                         : isAdministrator
                           ? 'Manage accounts, review submissions, oversee learning and platform content, and monitor reports and activity.'
+                          : isSmme
+                            ? 'Business support, market access, funding information, and agricultural enterprise guidance.'
+                            : isAssessor
+                              ? 'Assessment resources, evidence guidance, and authorised competency records.'
                           : 'Everything you need to grow, in one place.'}
           </Text>
         </View>
@@ -1095,27 +1350,12 @@ export default function ServicesScreen() {
           )}
         </View>
 
-        <ScrollView
-          horizontal
-          style={styles.filterScroll}
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filters}
-          accessibilityLabel="Service categories"
-        >
-          {filters.map((item) => (
-            <Pressable
-              key={item}
-              accessibilityRole="button"
-              accessibilityState={{ selected: item === activeFilter }}
-              onPress={() => setActiveFilter(item)}
-              style={[styles.filterChip, item === activeFilter && styles.filterChipSelected]}
-            >
-              <Text style={[styles.filterText, item === activeFilter && styles.filterTextSelected]}>
-                {item}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        <FilterDropdown
+          label="Service category"
+          items={filters.map((item) => ({ id: item, name: item }))}
+          selectedId={activeFilter}
+          onSelect={(value) => setActiveFilter(value as ServiceFilter)}
+        />
 
         <ScrollView
           contentContainerStyle={styles.list}
@@ -1205,6 +1445,11 @@ export default function ServicesScreen() {
                         pathname: '/audit',
                         params: service.destination.section ? { section: service.destination.section } : {},
                       });
+                    } else if (service.destination.type === 'assessor-workspace') {
+                      router.push({
+                        pathname: '/role-workspace',
+                        params: { section: service.destination.section },
+                      });
                     } else {
                       Alert.alert(service.destination.title, service.destination.message);
                     }
@@ -1218,6 +1463,11 @@ export default function ServicesScreen() {
                     <Text style={styles.cardTitle}>{service.title}</Text>
                     <Text style={styles.cardDescription} numberOfLines={2}>{service.description}</Text>
                     <Text style={styles.status}>{service.status}</Text>
+                    {getAssessorCardPreview(service.id) ? (
+                      <View style={styles.assessorPreview}>
+                        <Text style={styles.assessorPreviewText}>{getAssessorCardPreview(service.id)}</Text>
+                      </View>
+                    ) : null}
                   </View>
                   <Ionicons name="chevron-forward" size={17} color="#93A198" />
                 </Pressable>
@@ -1354,6 +1604,15 @@ const styles = StyleSheet.create({
   cardTitle: { color: palette.text, fontSize: 13, lineHeight: 18, fontWeight: '800' },
   cardDescription: { color: palette.muted, fontSize: 10, lineHeight: 14, marginTop: 2 },
   status: { color: palette.primaryDark, fontSize: 9, lineHeight: 13, fontWeight: '700', marginTop: 3 },
+  assessorPreview: {
+    alignSelf: 'flex-start',
+    marginTop: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#EDF5F0',
+  },
+  assessorPreviewText: { color: palette.primaryDark, fontSize: 9, lineHeight: 12, fontWeight: '800' },
   emptyState: { alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.xl },
   empty: { color: palette.muted, marginTop: spacing.sm, textAlign: 'center', fontSize: 13, lineHeight: 19 },
   retryButton: {

@@ -23,8 +23,10 @@ After starting the backend, use any of these accounts on the login screen. Enter
 | Learner | `learner@myagriseta.local` or `learner` | `Lerato123!` |
 | Farmer | `farmer@myagriseta.local` or `farmer` | `Sipho123!` |
 | Employer | `employer@myagriseta.local` or `employer` | `Thandi123!` |
+| SMME | `smme@myagriseta.local` or `smme` | `Ayanda123!` |
 | Skills Development Facilitator (SDF) | `sdf@myagriseta.local` or `sdf` | `Mpho123!` |
 | Training provider | `provider@myagriseta.local` or `provider` | `Naledi123!` |
+| Assessor | `assessor@myagriseta.local` or `assessor` | `Boitumelo123!` |
 | Administrator and internal staff | `multirole@myagriseta.local` or `multirole` | `Admin123!` |
 
 These are synthetic development accounts defined in `server/src/data.js`, not real user credentials. They are inserted into Neon only if their records do not already exist. Never use these accounts or passwords outside an isolated local environment.
@@ -34,6 +36,12 @@ These are synthetic development accounts defined in `server/src/data.js`, not re
 Sign in using an administrator account, then open **Administration** to provision accounts for supported platform roles, select active roles, update account details or passwords, and activate/deactivate accounts. Permissions are derived from the assigned role; users cannot select or switch into unassigned roles. The administrator screen also supports publishing role-targeted in-app announcements and reviewing historical role requests. Open **Reports & audit activity** from the administrator dashboard for date-filtered aggregate reports and audit history. Reports contain aggregate counts, not account/applicant identities.
 
 Users can register themselves from the sign-in screen. Learner accounts are active immediately and do not require administrator approval. Farmer, employer, SDF, and training-provider registrations require administrator review of role details before sign-in is enabled. Administrator and internal-staff accounts cannot be self-registered.
+
+### SMME and Assessor workspaces
+
+The **SMME workspace** is available from the SMME dashboard and supports business-profile fields, business-development/funding/market support requests, request status tracking, and in-app notifications. The **Assessor workspace** shows only assignments owned by the signed-in assessor and supports criteria review, assessment evidence notes, learner feedback, reports, and `Competent` or `Not yet competent` outcomes. Assessment outcomes notify the assigned learner.
+
+These workflows are platform records and demonstrations; they do not issue official qualifications, approve external funding, or connect to an external assessment/accreditation authority.
 
 #### Brevo email notifications
 
@@ -67,11 +75,15 @@ SMS delivery is not configured.
 ## Mobile app
 
 1. In `mobile/`, run `npm install`.
-2. Configure `server/.env` with Neon. The optional `mobile/.env.example` documents `EXPO_PUBLIC_API_URL`; the default is `http://localhost:3000/api`.
+2. Configure `server/.env` with Neon. The optional `mobile/.env.example` documents `EXPO_PUBLIC_API_URL`; local development defaults to `http://localhost:3000/api`, while EAS preview and production builds use `https://myagriseta.onrender.com/api`.
 3. From the repository root, `npm run dev` starts the API and Expo web app. Registration and sign-in require the API and Neon to be available.
 4. To use Expo Go, start the API in one terminal. From the repository root, run `npm --prefix server run dev`; if that terminal is already in `server/`, run `npm run dev` instead. In a second terminal at the repository root, run `npm run dev:mobile`. This starts Expo in LAN mode. Open its QR code in Expo Go. The native app automatically replaces a localhost API URL with the host address used by the Expo development server.
 
 The phone and development computer must be on the same Wi-Fi/network. The backend listens on `0.0.0.0` by default so devices on the LAN can reach it; set `HOST` in `server/.env` only if a different bind address is required. If the app still cannot connect, allow Node.js or inbound TCP port 3000 through the computer's private-network firewall, check `http://<computer-LAN-IP>:3000/health` from the phone's browser, and make sure `EXPO_PUBLIC_API_URL` is not set to a stale non-loopback address. `localhost` on the phone refers to the phone itself. Do not place secrets in `EXPO_PUBLIC_*` variables because they are bundled into the client.
+
+#### Build an installable Android APK
+
+The EAS `preview` profile builds an APK and points it at the hosted HTTPS API; the `production` profile also uses that API. From `mobile/`, run `npx eas-cli@latest build --platform android --profile preview`. Install the newly generated APK after the build completes; an already installed APK does not receive updated API settings. Local `.env` settings are for development and must not be used as the production API configuration.
 
 ### Farmer services and curated information
 

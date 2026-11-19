@@ -228,7 +228,7 @@ export default function NotificationsScreen() {
                 </Pressable>
                 <Text style={styles.readStatus}>{item.read ? 'Read' : 'Unread'}</Text>
                 {item.isDemo ? (
-                  <Text style={styles.emailStatus}>Sample notification for demonstration; no email was sent.</Text>
+                  <Text style={styles.emailStatus}>Sample notification; no email was sent.</Text>
                 ) : item.emailDeliveryStatus === 'sent' ? (
                   <View>
                     <Text style={styles.emailStatus}>

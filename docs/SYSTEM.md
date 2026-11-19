@@ -92,7 +92,7 @@ The server reads:
 
 ### Mobile app
 
-In a separate terminal, install dependencies in `mobile/` and run `npm run dev`; use `npm run start:lan` or the root `npm run dev:mobile` when testing with Expo Go. The API listens on `0.0.0.0` by default so a phone on the same network can reach it. `EXPO_PUBLIC_API_URL` overrides the API base URL; its default is `http://localhost:3000/api`. On native platforms, a loopback URL is replaced with the Expo development server host, because `localhost` on a phone refers to the phone. Permit inbound TCP port 3000 through the development computer's private-network firewall when needed. Use HTTPS for deployed environments.
+In a separate terminal, install dependencies in `mobile/` and run `npm run dev`; use `npm run start:lan` or the root `npm run dev:mobile` when testing with Expo Go. The API listens on `0.0.0.0` by default so a phone on the same network can reach it. `EXPO_PUBLIC_API_URL` overrides the API base URL; development defaults to `http://localhost:3000/api`, with native development replacing a loopback URL with the Expo development server host. EAS preview APK and production builds use `https://myagriseta.onrender.com/api`; release builds also fall back to that HTTPS API rather than a loopback address. Permit inbound TCP port 3000 through the development computer's private-network firewall when needed for local development. Use HTTPS for deployed environments.
 
 `mobile/.env.example` documents the optional API URL override. Never put secrets in `EXPO_PUBLIC_*` variables.
 

@@ -121,6 +121,19 @@ Learner/farmer `GET /api/me` responses include the account holder's own candidat
 
 Authentication required. Returns `{ "message": "Logged out successfully." }`, revokes the presented token immediately in the API process, and stores only its SHA-256 hash and expiry in Neon so the revocation survives an API restart. If durable persistence fails, the request returns an error while the in-process revocation remains active. The client calls this endpoint and deletes its local token even if the request fails. If the API cannot confirm revocation, the client still signs out locally and warns that the token may remain valid until expiry.
 
+## Assessor workflow
+
+All assessor endpoints require an authenticated account whose server-side active role is `assessor`. Assignment and learner responses are scoped to the assessor's assigned records.
+
+- `GET /api/assessor/dashboard` — returns database-backed counts for assigned learners, pending, scheduled, completed, awaiting-verification, competent, and not-yet-competent assessments, plus recent activity and upcoming schedules.
+- `GET /api/assessor/profile` and `PATCH /api/assessor/profile` — read or update permitted qualifications and registration reference. Accreditation status is not self-editable.
+- `GET /api/assessor/learners` — returns only learners linked to the assessor's assignments.
+- `GET /api/assessor/criteria` — returns criteria configured on the assessor's assignments.
+- `GET /api/assessor/assignments` — returns the assessor's assigned assessment records.
+- `PATCH /api/assessor/assignments/:id` — saves a draft or submits an assessment. Supported outcomes are `Competent`, `Not Yet Competent`, `Pending Assessment`, and `Assessment Incomplete`. Submitted records move to `Awaiting Verification`; scores must be between 0 and 100 when supplied. Evidence metadata accepts PDF, JPEG, or PNG files up to 5 MB.
+- `GET /api/learner/assessments` — returns only the authenticated learner's submitted assessment records and excludes internal report text.
+- `GET /api/admin/assessment-verifications` and `PATCH /api/admin/assessment-verifications/:id` — administrator or internal staff verification queue and decisions (`Verified` or `Changes Requested`). Assessors cannot verify their own records.
+
 ## Dashboards and directory
 
 ### `GET /api/dashboard`

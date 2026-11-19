@@ -39,6 +39,31 @@ async function login(identifier, password) {
   return body.token;
 }
 
+test('local web development origins on alternate ports can access the API', async () => {
+  const { response } = await request('/auth/login', {
+    method: 'POST',
+    headers: { Origin: 'http://localhost:8082' },
+    body: JSON.stringify({}),
+  });
+
+  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:8082');
+  assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+});
+
+test('SMME and assessor demo accounts receive only their assigned roles', async () => {
+  const smmeToken = await login('smme', 'Ayanda123!');
+  const smmeMe = await request('/me', { headers: auth(smmeToken) });
+  assert.equal(smmeMe.response.status, 200);
+  assert.deepEqual(smmeMe.body.user.roles, ['smme']);
+  assert.equal(smmeMe.body.user.activeRole, 'smme');
+
+  const assessorToken = await login('assessor', 'Boitumelo123!');
+  const assessorMe = await request('/me', { headers: auth(assessorToken) });
+  assert.equal(assessorMe.response.status, 200);
+  assert.deepEqual(assessorMe.body.user.roles, ['assessor']);
+  assert.equal(assessorMe.body.user.activeRole, 'assessor');
+});
+
 function auth(token) {
   return { Authorization: `Bearer ${token}` };
 }
@@ -432,11 +457,12 @@ test('non-admin users cannot create accounts', async () => {
 });
 
 test('each supported role receives a distinct dashboard with role-eligible services', async () => {
-  const roles = ['learner', 'farmer', 'employer', 'sdf', 'training_provider', 'administrator'];
+  const roles = ['learner', 'farmer', 'employer', 'smme', 'sdf', 'training_provider', 'assessor', 'administrator'];
   const provisioningToken = await login('admin@myagriseta.local', 'Admin123!');
 
   for (const role of roles) {
-    if (role === 'learner' || role === 'farmer' || role === 'sdf' || role === 'administrator') {
+    if (role === 'learner' || role === 'farmer' || role === 'sdf' || role === 'administrator' ||
+        role === 'smme' || role === 'assessor') {
       continue;
     }
 
@@ -477,9 +503,11 @@ test('each supported role receives a distinct dashboard with role-eligible servi
       employer: 'dashboard-employer',
       sdf: 'sdf@myagriseta.local',
       training_provider: 'dashboard-training_provider',
+      smme: 'smme',
+      assessor: 'assessor',
       administrator: 'admin@myagriseta.local',
     };
-    const password = role === 'administrator' ? 'Admin123!' : role === 'learner' ? 'Lerato123!' : role === 'farmer' ? 'Sipho123!' : role === 'sdf' ? 'Mpho123!' : 'DashboardPass123!';
+    const password = role === 'administrator' ? 'Admin123!' : role === 'learner' ? 'Lerato123!' : role === 'farmer' ? 'Sipho123!' : role === 'sdf' ? 'Mpho123!' : role === 'smme' ? 'Ayanda123!' : role === 'assessor' ? 'Boitumelo123!' : 'DashboardPass123!';
     const token = await login(identifierByRole[role], password);
     const { response, body } = await request('/dashboard', {
       headers: { Authorization: 'Bearer ' + token },
@@ -764,6 +792,68 @@ test('service directory includes the eleven proposed service areas', async () =>
     assert.ok(names.has(name), `${name} should be listed`);
   }
   assert.ok(body.services.every((service) => typeof service.dataStatus === 'string' && service.dataStatus.length > 0));
+});
+
+test('SMME and assessor service directories are not empty', async () => {
+  const accounts = [
+    { identifier: 'smme', password: 'Ayanda123!', expected: ['AgriSMME', 'AgriMarket'] },
+    { identifier: 'assessor', password: 'Boitumelo123!', expected: ['AgriIntel', 'AgriImpact'] },
+  ];
+
+  for (const account of accounts) {
+    const token = await login(account.identifier, account.password);
+    const { response, body } = await request('/services', {
+      headers: { Authorization: 'Bearer ' + token },
+    });
+
+    test('SMME workspace is private and tracks business support requests', async () => {
+      const smmeToken = await login('smme', 'Ayanda123!');
+      const learnerToken = await login('learner', 'Lerato123!');
+      const profile = await request('/smme/business-profile', { headers: { Authorization: 'Bearer ' + smmeToken } });
+      assert.equal(profile.response.status, 200);
+      const update = await request('/smme/business-profile', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + smmeToken },
+        body: JSON.stringify({ sector: 'Vegetable farming' }),
+      });
+      assert.equal(update.response.status, 200);
+      const created = await request('/smme/support-requests', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + smmeToken },
+        body: JSON.stringify({ title: 'Market access support', category: 'Markets', details: 'Need guidance on local buyer readiness.' }),
+      });
+      assert.equal(created.response.status, 201);
+      const denied = await request('/smme/business-profile', { headers: { Authorization: 'Bearer ' + learnerToken } });
+      assert.equal(denied.response.status, 403);
+    });
+
+    test('assessors can complete only their own assigned assessments', async () => {
+      const assessorToken = await login('assessor', 'Boitumelo123!');
+      const learnerToken = await login('learner', 'Lerato123!');
+      const assignments = await request('/assessor/assignments', { headers: { Authorization: 'Bearer ' + assessorToken } });
+      assert.equal(assignments.response.status, 200);
+      assert.ok(assignments.body.assignments.length > 0);
+      const assignmentId = assignments.body.assignments[0].id;
+      const completed = await request(`/assessor/assignments/${assignmentId}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + assessorToken },
+        body: JSON.stringify({
+          result: 'Learner demonstrated the required practical knowledge.',
+          feedback: 'Good practical explanation and safe working approach.',
+          report: 'Assessment evidence reviewed against the assigned criteria.',
+          outcome: 'Competent',
+        }),
+      });
+      assert.equal(completed.response.status, 200);
+      assert.equal(completed.body.assignment.outcome, 'Competent');
+      const denied = await request('/assessor/assignments', { headers: { Authorization: 'Bearer ' + learnerToken } });
+      assert.equal(denied.response.status, 403);
+    });
+
+    assert.equal(response.status, 200);
+    const names = new Set(body.services.map((service) => service.name));
+    for (const name of account.expected) assert.ok(names.has(name), `${account.identifier} should see ${name}`);
+  }
 });
 
 test('self-registration rejects invalid roles and malformed email addresses', async () => {
